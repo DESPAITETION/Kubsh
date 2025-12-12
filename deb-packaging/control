@@ -4,12 +4,8 @@ Section: utils
 Priority: optional
 Architecture: amd64
 Depends: libc6 (>= 2.34), libstdc++6 (>= 11), lsblk
-Maintainer: Student Developer <dev.kubsh@proton.me>
-Description: Custom shell with VFS support
- A custom shell implementation with virtual filesystem.
- Features:
-  - Command history with file persistence
-  - Environment variable management
-  - User information VFS at ~/users
-  - Signal handling (SIGHUP)
-  - Disk information commands
+Maintainer: Student <student@example.com>
+Description: Custom shell implementation
+  A custom shell with VFS support for user information.
+  Features include command history, environment variable
+  management, and virtual filesystem for user data.
