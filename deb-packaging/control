@@ -1,0 +1,15 @@
+Package: kubsh
+Version: 1.0.0
+Section: utils
+Priority: optional
+Architecture: amd64
+Depends: libc6 (>= 2.34), libstdc++6 (>= 11), lsblk
+Maintainer: Student Developer <dev.kubsh@proton.me>
+Description: Custom shell with VFS support
+ A custom shell implementation with virtual filesystem.
+ Features:
+  - Command history with file persistence
+  - Environment variable management
+  - User information VFS at ~/users
+  - Signal handling (SIGHUP)
+  - Disk information commands

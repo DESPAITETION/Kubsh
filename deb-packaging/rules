@@ -1,0 +1,15 @@
+#!/usr/bin/make -f
+
+%:
+	dh $@
+
+override_dh_auto_configure:
+	# No configuration needed for this project
+
+override_dh_auto_build:
+	$(MAKE) build
+
+override_dh_auto_install:
+	# Install the compiled binary
+	mkdir -p $(DESTDIR)/usr/bin
+	install -m 755 kubsh $(DESTDIR)/usr/bin/

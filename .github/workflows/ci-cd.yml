@@ -1,0 +1,58 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  test:
+    name: Test in Docker
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Pull test Docker image
+        run: docker pull tyvik/kubsh_test:master
+
+      - name: Test compilation
+        run: |
+          docker run --rm \
+            -v ${{ github.workspace }}:/kubsh \
+            -w /kubsh \
+            tyvik/kubsh_test:master \
+            make build
+
+      - name: Run basic tests
+        run: |
+          docker run --rm \
+            -v ${{ github.workspace }}:/kubsh \
+            -w /kubsh \
+            tyvik/kubsh_test:master \
+            ./tests/test_basic.sh
+
+      - name: Build deb package
+        run: |
+          docker run --rm \
+            -v ${{ github.workspace }}:/kubsh \
+            -w /kubsh \
+            tyvik/kubsh_test:master \
+            bash -c "apt-get update && apt-get install -y dpkg-dev && make package"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: kubsh-deb-package
+          path: kubsh_*.deb
+          if-no-files-found: warn
+
+      - name: Success message
+        if: success()
+        run: echo "✓ All tests passed!"
+
+      - name: Failure message
+        if: failure()
+        run: echo "✗ Tests failed. Check the logs above."

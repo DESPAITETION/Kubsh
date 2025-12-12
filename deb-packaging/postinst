@@ -1,0 +1,4 @@
+#!/bin/bash
+# Post-installation script for kubsh
+echo "kubsh installed successfully!"
+echo "Run 'kubsh' to start the shell."

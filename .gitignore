@@ -1,0 +1,39 @@
+# Compiled files
+kubsh
+*.o
+*.so
+*.a
+
+# Build directories
+build/
+dist/
+bin/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs and temp files
+*.log
+*.tmp
+test_results/
+
+# Debian packages
+*.deb
+deb-packaging/usr/      # ← ИЗМЕНЕНО
+deb-packaging/DEBIAN/   # ← ИЗМЕНЕНО
+
+# History files
+.kubsh_history
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
