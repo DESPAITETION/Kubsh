@@ -178,6 +178,77 @@ void executeExternal(const std::string& command, const std::vector<std::string>&
     }
 }
 
+// ========== Функция для создания пользователя ==========
+void checkAndCreateUser(const std::string& username) {
+    // Проверяем, существует ли пользователь
+    struct passwd* pw = getpwnam(username.c_str());
+    if (pw != nullptr) {
+        return; // Пользователь уже существует
+    }
+    
+    // Создаем пользователя через adduser
+    pid_t pid = fork();
+    if (pid == 0) {
+        // Дочерний процесс
+        execlp("adduser", "adduser", "--disabled-password", "--gecos", "", username.c_str(), NULL);
+        exit(1);
+    } else if (pid > 0) {
+        waitpid(pid, nullptr, 0);
+    }
+}
+
+// ========== Проверка новых пользователей в VFS ==========
+void checkNewVFSUsers() {
+    std::string vfsDir = "/opt/users";
+    DIR* dir = opendir(vfsDir.c_str());
+    if (!dir) return;
+    
+    struct dirent* entry;
+    while ((entry = readdir(dir)) != nullptr) {
+        if (entry->d_type == DT_DIR) {
+            std::string username = entry->d_name;
+            if (username == "." || username == "..") continue;
+            
+            std::string userDir = vfsDir + "/" + username;
+            std::string idFile = userDir + "/id";
+            
+            // Если нет файла id, значит это новая директория
+            std::ifstream file(idFile);
+            if (!file.is_open()) {
+                // Создаем пользователя
+                checkAndCreateUser(username);
+                
+                // Создаем файлы в VFS
+                struct passwd* pw = getpwnam(username.c_str());
+                if (pw != nullptr) {
+                    // Создаем файл id
+                    std::ofstream idOut(idFile);
+                    if (idOut.is_open()) {
+                        idOut << pw->pw_uid;
+                        idOut.close();
+                    }
+                    
+                    // Создаем файл home
+                    std::ofstream homeOut(userDir + "/home");
+                    if (homeOut.is_open()) {
+                        homeOut << pw->pw_dir;
+                        homeOut.close();
+                    }
+                    
+                    // Создаем файл shell
+                    std::ofstream shellOut(userDir + "/shell");
+                    if (shellOut.is_open()) {
+                        shellOut << pw->pw_shell;
+                        shellOut.close();
+                    }
+                }
+            }
+        }
+    }
+    
+    closedir(dir);
+}
+
 // ========== VFS (Virtual File System) ==========
 void initVFS() {
     // Для тестов всегда используем /opt/users
@@ -186,65 +257,8 @@ void initVFS() {
     // Создаем директорию, если её нет
     mkdir(vfsDir.c_str(), 0755);
     
-    // Читаем /etc/passwd и создаем VFS
-    std::ifstream passwd("/etc/passwd");
-    if (!passwd.is_open()) {
-        return;
-    }
-    
-    std::string line;
-    while (std::getline(passwd, line)) {
-        // Ищем пользователей с shell (заканчивается на sh)
-        size_t shell_pos = line.find_last_of(':');
-        if (shell_pos == std::string::npos) continue;
-        
-        std::string shell = line.substr(shell_pos + 1);
-        if (shell.find("sh") == std::string::npos) {
-            continue; // Пропускаем пользователей без шелла
-        }
-        
-        std::stringstream ss(line);
-        std::string token;
-        std::vector<std::string> parts;
-        
-        while (std::getline(ss, token, ':')) {
-            parts.push_back(token);
-        }
-        
-        if (parts.size() >= 7) {
-            std::string username = parts[0];
-            std::string uid = parts[2];
-            std::string home_dir = parts[5];
-            std::string shell = parts[6];
-            
-            // Создаем директорию пользователя
-            std::string userDir = vfsDir + "/" + username;
-            mkdir(userDir.c_str(), 0755);
-            
-            // Создаем файл id
-            std::ofstream idFile(userDir + "/id");
-            if (idFile.is_open()) {
-                idFile << uid;
-                idFile.close();
-            }
-            
-            // Создаем файл home
-            std::ofstream homeFile(userDir + "/home");
-            if (homeFile.is_open()) {
-                homeFile << home_dir;
-                homeFile.close();
-            }
-            
-            // Создаем файл shell
-            std::ofstream shellFile(userDir + "/shell");
-            if (shellFile.is_open()) {
-                shellFile << shell;
-                shellFile.close();
-            }
-        }
-    }
-    
-    passwd.close();
+    // Проверяем и создаем существующих пользователей
+    checkNewVFSUsers();
 }
 
 // ========== Главная функция ==========
@@ -263,7 +277,7 @@ int main() {
     struct sigaction sa;
     sa.sa_handler = handleSIGHUP;
     sigemptyset(&sa.sa_mask);
-    sa.sa_flags = SA_RESTART;  // Важно: перезапускаем системные вызовы
+    sa.sa_flags = SA_RESTART;
     sigaction(SIGHUP, &sa, NULL);
     
     // Проверяем, интерактивный ли режим
@@ -279,6 +293,9 @@ int main() {
     }
     
     while (true) {
+        // Проверяем новые пользователи в VFS
+        checkNewVFSUsers();
+        
         // Чтение строки
         if (!std::getline(std::cin, line)) {
             if (interactive) {
