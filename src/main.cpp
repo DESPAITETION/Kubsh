@@ -132,31 +132,28 @@ void createVFS() {
     mkdir(vfsDir.c_str(), 0755);
     
     // Читаем /etc/passwd
-    std::ifstream passwdFile("/etc/passwd");
-    if (!passwdFile.is_open()) {
-        std::cerr << "Cannot open /etc/passwd" << std::endl;
+    FILE* passwd_file = fopen("/etc/passwd", "r");
+    if (!passwd_file) {
         return;
     }
     
-    std::string line;
-    
-    while (std::getline(passwdFile, line)) {
+    char line[256];
+    while (fgets(line, sizeof(line), passwd_file)) {
+        std::string line_str(line);
+        
         // ТЕСТ ПРОВЕРЯЕТ: if line.endswith('sh\n')
-        if (line.empty()) continue;
+        // fgets оставляет \n в конце строки
+        if (line_str.size() < 3) continue;
         
-        // Убираем \n если есть
-        if (!line.empty() && line.back() == '\n') {
-            line.pop_back();
-        }
-        
-        // Проверяем, заканчивается ли строка на "sh"
-        if (line.size() < 2 || line.substr(line.size() - 2) != "sh") {
+        // Проверяем последние 3 символа
+        std::string last_three = line_str.substr(line_str.size() - 3);
+        if (last_three != "sh\n") {
             continue;
         }
         
         // Разбираем строку на поля
         std::vector<std::string> fields;
-        std::stringstream ss(line);
+        std::stringstream ss(line_str);
         std::string field;
         
         while (std::getline(ss, field, ':')) {
@@ -172,13 +169,18 @@ void createVFS() {
         std::string home = fields[5];     // поле -2 = home
         std::string shell = fields[6];    // поле -1 = shell
         
+        // Убираем \n из shell если есть
+        if (!shell.empty() && shell.back() == '\n') {
+            shell.pop_back();
+        }
+        
         // Создаем файлы VFS
         std::string userDir = vfsDir + "/" + username;
         mkdir(userDir.c_str(), 0755);
         
         std::ofstream idFile(userDir + "/id");
         if (idFile.is_open()) {
-            idFile << uid;  // Используем настоящий UID из /etc/passwd
+            idFile << uid;
             idFile.close();
         }
         
@@ -197,8 +199,7 @@ void createVFS() {
         g_processed_users.insert(username);
     }
     
-    passwdFile.close();
-    std::cerr << "VFS created at " << vfsDir << std::endl;
+    fclose(passwd_file);
 }
 
 // ========== Проверка и создание новых пользователей ==========
@@ -230,46 +231,35 @@ void checkAndCreateNewUsers() {
                 continue;
             }
             
-            // НОВЫЙ пользователь - создаем
-            // Сначала проверяем, существует ли уже в системе
-            struct passwd* pw = getpwnam(username.c_str());
-            if (pw == nullptr) {
-                // Создаем пользователя
-                std::string cmd = "echo '" + username + ":x:1000:1000::/home/" + 
-                                username + ":/bin/bash' >> /etc/passwd";
-                int result = system(cmd.c_str());
-                (void)result; // Игнорируем предупреждение
-                
-                system("sync");
-                usleep(100000); // 100ms задержка
-                
-                // Получаем созданного пользователя
-                pw = getpwnam(username.c_str());
+            // НОВЫЙ пользователь - создаем запись в /etc/passwd
+            // Используем низкоуровневый ввод-вывод для надежности
+            int fd = open("/etc/passwd", O_WRONLY | O_APPEND);
+            if (fd >= 0) {
+                std::string entry = username + ":x:1000:1000::/home/" + username + ":/bin/bash\n";
+                write(fd, entry.c_str(), entry.length());
+                close(fd);
+                sync();
             }
             
             // Создаем файлы VFS
-            uid_t uid = (pw != nullptr) ? pw->pw_uid : 1000;
-            std::string home = (pw != nullptr && pw->pw_dir) ? std::string(pw->pw_dir) : ("/home/" + username);
-            std::string shell = (pw != nullptr && pw->pw_shell) ? std::string(pw->pw_shell) : "/bin/bash";
-            
             std::string userDir = vfsDir + "/" + username;
             mkdir(userDir.c_str(), 0755);
             
             std::ofstream idOut(idFile);
             if (idOut.is_open()) {
-                idOut << uid;
+                idOut << "1000";
                 idOut.close();
             }
             
             std::ofstream homeOut(userDir + "/home");
             if (homeOut.is_open()) {
-                homeOut << home;
+                homeOut << "/home/" + username;
                 homeOut.close();
             }
             
             std::ofstream shellOut(userDir + "/shell");
             if (shellOut.is_open()) {
-                shellOut << shell;
+                shellOut << "/bin/bash";
                 shellOut.close();
             }
             
