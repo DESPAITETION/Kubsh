@@ -4,15 +4,16 @@
 # Переменные
 CXX := g++
 CXXFLAGS := -std=c++17 -Wall -Wextra -O2 -g
-TARGET := kubsh  # ИЗМЕНЕНО: было Kubsh, стало kubsh (строчными)
+TARGET := kubsh
 SRC_DIR := src
-SOURCES := src/main.cpp  # Вместо $(wildcard $(SRC_DIR)/*.cpp)
+SOURCES := src/main.cpp src/vfs.cpp
+LIBS := -lfuse3
 
 # Основные цели
 all: build
 
 build: $(SOURCES)
-	$(CXX) $(CXXFLAGS) $(SOURCES) -o $(TARGET)
+	$(CXX) $(CXXFLAGS) $(SOURCES) -o $(TARGET) $(LIBS)
 
 run: build
 	./$(TARGET)
@@ -39,7 +40,7 @@ package: build
 install: package
 	sudo dpkg -i kubsh_1.0.0_amd64.deb || true
 
-# Тестирование в Docker (НОВАЯ ЦЕЛЬ)
+# Тестирование в Docker
 docker-test: build
 	@echo "Testing in Docker..."
 	docker run --rm \
@@ -47,6 +48,11 @@ docker-test: build
 		-w /kubsh \
 		tyvik/kubsh_test:master \
 		/bin/bash -c "\
+			echo 'Installing dependencies...' && \
+			apt-get update && \
+			apt-get install -y fuse3 libfuse3-dev 2>/dev/null || apt-get install -y fuse libfuse-dev && \
+			echo 'Copying kubsh...' && \
 			cp kubsh /usr/local/bin/ && \
 			chmod +x /usr/local/bin/kubsh && \
+			echo 'Running tests...' && \
 			pytest /opt/test_basic.py /opt/test_vfs.py -v"

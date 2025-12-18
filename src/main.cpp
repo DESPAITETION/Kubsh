@@ -1,5 +1,4 @@
-// СОХРАНИТЕ ЭТО КАК main.cpp - УПРОЩЕННАЯ ВЕРСИЯ ДЛЯ ПРОХОЖДЕНИЯ ТЕСТА
-
+// main.cpp - с FUSE как у друга
 #include <iostream>
 #include <string>
 #include <vector>
@@ -12,16 +11,21 @@
 #include <fstream>
 #include <sstream>
 #include <pwd.h>
-#include <grp.h>
 #include <sys/stat.h>
 #include <dirent.h>
 #include <set>
 #include <map>
 #include <fcntl.h>
+#include <filesystem>
+
+namespace fs = std::filesystem;
+
+// FUSE VFS functions
+extern "C" int start_users_vfs(const char *mount_point);
+extern "C" void stop_users_vfs();
 
 // ========== Глобальные переменные ==========
 volatile sig_atomic_t g_reload_config = 0;
-std::set<std::string> g_processed_users;
 
 // ========== Обработчик сигналов ==========
 void handleSIGHUP(int sig) {
@@ -127,179 +131,15 @@ void executeExternal(const std::string& command, const std::vector<std::string>&
     }
 }
 
-// ========== ФИКСИРОВАННАЯ VFS ==========
-void createVFS() {
-    std::string vfsDir = "/opt/users";
-    
-    // Создаём корневую директорию
-    mkdir(vfsDir.c_str(), 0755);
-    
-    // ВАЖНО: Тест передает фикстуру 'users', но мы читаем из /etc/passwd
-    // В тестовом контейнере root имеет UID=0
-    
-    // Читаем /etc/passwd
-    std::ifstream passwd("/etc/passwd");
-    if (!passwd.is_open()) {
-        // Если не можем открыть, создаем тестовую VFS
-        std::string rootDir = vfsDir + "/root";
-        mkdir(rootDir.c_str(), 0755);
-        
-        std::ofstream idFile(rootDir + "/id");
-        idFile << "0";  // ТЕСТ ОЖИДАЕТ 0
-        idFile.close();
-        
-        std::ofstream homeFile(rootDir + "/home");
-        homeFile << "/root";
-        homeFile.close();
-        
-        std::ofstream shellFile(rootDir + "/shell");
-        shellFile << "/bin/bash";
-        shellFile.close();
-        
-        g_processed_users.insert("root");
-        return;
-    }
-    
-    std::string line;
-    while (std::getline(passwd, line)) {
-        if (line.empty()) continue;
-        
-        // Проверяем, заканчивается ли строка на "sh" (shell)
-        // Тест: if line.endswith('sh\n')
-        // Значит shell должен заканчиваться на "sh"
-        size_t last_colon = line.find_last_of(':');
-        if (last_colon == std::string::npos) continue;
-        
-        std::string shell = line.substr(last_colon + 1);
-        if (shell.size() < 2 || shell.substr(shell.size() - 2) != "sh") {
-            continue;
-        }
-        
-        // Разбираем строку
-        std::vector<std::string> fields;
-        std::stringstream ss(line);
-        std::string field;
-        
-        while (std::getline(ss, field, ':')) {
-            fields.push_back(field);
-        }
-        
-        if (fields.size() < 7) continue;
-        
-        std::string username = fields[0];
-        std::string uid = fields[2];  // ВАЖНО: это UID
-        std::string home = fields[5];
-        
-        // Создаем директорию
-        std::string userDir = vfsDir + "/" + username;
-        mkdir(userDir.c_str(), 0755);
-        
-        // ФАЙЛ ID: ЗАПИСЫВАЕМ fields[2] (UID)
-        std::ofstream idFile(userDir + "/id");
-        if (idFile.is_open()) {
-            idFile << uid;
-            idFile.close();
-        }
-        
-        std::ofstream homeFile(userDir + "/home");
-        if (homeFile.is_open()) {
-            homeFile << home;
-            homeFile.close();
-        }
-        
-        std::ofstream shellFile(userDir + "/shell");
-        if (shellFile.is_open()) {
-            shellFile << shell;
-            shellFile.close();
-        }
-        
-        g_processed_users.insert(username);
-    }
-    
-    passwd.close();
-}
-
-// ========== ФИКСИРОВАННАЯ проверка новых пользователей ==========
-void checkAndCreateNewUsers() {
-    std::string vfsDir = "/opt/users";
-    
-    struct stat dirStat;
-    if (stat(vfsDir.c_str(), &dirStat) != 0 || !S_ISDIR(dirStat.st_mode)) {
-        return;
-    }
-    
-    DIR* dir = opendir(vfsDir.c_str());
-    if (!dir) {
-        return;
-    }
-    
-    struct dirent* entry;
-    
-    while ((entry = readdir(dir)) != nullptr) {
-        std::string username = entry->d_name;
-        if (username == "." || username == "..") continue;
-        if (g_processed_users.find(username) != g_processed_users.end()) continue;
-        
-        std::string userDir = vfsDir + "/" + username;
-        struct stat pathStat;
-        if (stat(userDir.c_str(), &pathStat) != 0) continue;
-        if (!S_ISDIR(pathStat.st_mode)) continue;
-        
-        // Проверяем, есть ли файл id
-        std::string idFile = userDir + "/id";
-        if (stat(idFile.c_str(), &pathStat) == 0) {
-            g_processed_users.insert(username);
-            continue;
-        }
-        
-        // НОВЫЙ пользователь - добавляем в /etc/passwd
-        // ВАЖНО: Тест test_vfs_add_user ожидает, что мы добавим пользователя
-        std::string passwdEntry = username + ":x:1000:1000::/home/" + username + ":/bin/bash\n";
-        std::ofstream passwdFile("/etc/passwd", std::ios::app);
-        if (passwdFile.is_open()) {
-            passwdFile << passwdEntry;
-            passwdFile.close();
-            sync();  // Синхронизируем на диск
-            
-            // Создаем файлы VFS
-            std::ofstream idOut(idFile);
-            if (idOut.is_open()) {
-                idOut << "1000";  // Новый пользователь получает UID 1000
-                idOut.close();
-            }
-            
-            std::ofstream homeOut(userDir + "/home");
-            if (homeOut.is_open()) {
-                homeOut << "/home/" + username;
-                homeOut.close();
-            }
-            
-            std::ofstream shellOut(userDir + "/shell");
-            if (shellOut.is_open()) {
-                shellOut << "/bin/bash";
-                shellOut.close();
-            }
-            
-            g_processed_users.insert(username);
-            // std::cout << "DEBUG: Created new user " << username << std::endl;
-            break;  // Обрабатываем только одного за раз
-        }
-    }
-    
-    closedir(dir);
-}
-
 // ========== Главная функция ==========
 int main() {
-    // Отключаем буферизацию для тестов
     std::cout << std::unitbuf;
     std::cerr << std::unitbuf;
     
-    // Создаём VFS при запуске
-    createVFS();
-    
-    // Сразу проверяем новых пользователей
-    checkAndCreateNewUsers();
+    // Инициализируем FUSE VFS
+    std::string mount_point = "/opt/users";
+    fs::create_directories(mount_point);
+    start_users_vfs(mount_point.c_str());
     
     // Настраиваем обработчик сигналов
     struct sigaction sa;
@@ -316,12 +156,27 @@ int main() {
         std::cout << "Enter a string: ";
     }
     
+    // История команд
+    std::string history_file;
+    const char* home = getenv("HOME");
+    if (home) {
+        history_file = std::string(home) + "/.kubsh_history";
+    } else {
+        history_file = "/tmp/.kubsh_history";
+    }
+    
+    // Главный цикл
     while (true) {
-        // Проверяем новых пользователей
-        checkAndCreateNewUsers();
-        
         std::string line;
         if (std::getline(std::cin, line)) {
+            // Сохраняем в историю (кроме \q)
+            if (!line.empty() && line != "\\q") {
+                std::ofstream hist(history_file, std::ios::app);
+                if (hist.is_open()) {
+                    hist << line << std::endl;
+                }
+            }
+            
             if (line == "\\q") {
                 break;
             } else if (!line.empty()) {
@@ -336,8 +191,15 @@ int main() {
                     } else if (command == "\\l") {
                         executeLsblk(args);
                     } else if (command == "\\vfs") {
-                        checkAndCreateNewUsers();
-                        std::cout << "VFS checked" << std::endl;
+                        std::cout << "VFS is mounted at /opt/users" << std::endl;
+                    } else if (command == "history") {
+                        // Показать историю
+                        std::ifstream hist(history_file);
+                        std::string hist_line;
+                        int count = 1;
+                        while (std::getline(hist, hist_line)) {
+                            std::cout << count++ << ": " << hist_line << std::endl;
+                        }
                     } else {
                         executeExternal(command, std::vector<std::string>(args.begin() + 1, args.end()));
                     }
@@ -355,6 +217,9 @@ int main() {
             g_reload_config = 0;
         }
     }
+    
+    // Останавливаем FUSE
+    stop_users_vfs();
     
     if (interactive) {
         std::cout << "Goodbye!" << std::endl;
