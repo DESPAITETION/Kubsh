@@ -4,9 +4,9 @@
 # Переменные
 CXX := g++
 CXXFLAGS := -std=c++17 -Wall -Wextra -O2 -g
-TARGET := kubsh  # ИЗМЕНЕНО: было Kubsh, стало kubsh (строчными)
+TARGET := kubsh
 SRC_DIR := src
-SOURCES := src/main.cpp  # Вместо $(wildcard $(SRC_DIR)/*.cpp)
+SOURCES := src/main.cpp src/VFSManager.cpp  # Добавьте все исходные файлы
 
 # Основные цели
 all: build
