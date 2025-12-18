@@ -41,7 +41,7 @@ install: package
 	sudo dpkg -i kubsh_1.0.0_amd64.deb || true
 
 # Тестирование в Docker
-docker-test: build
+docker-test:
 	@echo "Testing in Docker..."
 	docker run --rm \
 		-v $(PWD):/kubsh \
@@ -50,7 +50,9 @@ docker-test: build
 		/bin/bash -c "\
 			echo 'Installing dependencies...' && \
 			apt-get update && \
-			apt-get install -y fuse3 libfuse3-dev 2>/dev/null || apt-get install -y fuse libfuse-dev && \
+			apt-get install -y g++ make fuse3 libfuse3-dev && \
+			echo 'Compiling...' && \
+			g++ -std=c++17 -Wall -Wextra -O2 -g src/main.cpp src/vfs.cpp -o kubsh -lfuse3 && \
 			echo 'Copying kubsh...' && \
 			cp kubsh /usr/local/bin/ && \
 			chmod +x /usr/local/bin/kubsh && \
