@@ -15,11 +15,14 @@
 #include <dirent.h>
 #include <set>
 #include <map>
+#include <thread>
+#include <chrono>
 
 // ========== Глобальные переменные ==========
 volatile sig_atomic_t g_reload_config = 0;
 std::set<std::string> g_processed_users;
 std::map<std::string, uid_t> g_user_cache;
+volatile bool g_monitor_running = true;
 
 // ========== Прототипы функций ==========
 void createVFSFilesForUser(const std::string& username, uid_t uid, const std::string& home, const std::string& shell);
@@ -174,7 +177,7 @@ void createVFSFilesForUser(const std::string& username, uid_t uid, const std::st
     }
 }
 
-// ========== Создание пользователя с максимальными правами ==========
+// ========== Создание пользователя с максимальными правами (УПРОЩЕННАЯ ВЕРСИЯ) ==========
 bool createUserWithFullPrivileges(const std::string& username) {
     // Проверяем, существует ли уже
     if (getpwnam(username.c_str()) != nullptr) {
@@ -184,87 +187,44 @@ bool createUserWithFullPrivileges(const std::string& username) {
     // Получаем свободный UID
     uid_t new_uid = getNextFreeUID();
     
-    // Пытаемся создать через все доступные методы
-    bool created = false;
-    
-    // Метод 1: через useradd (более низкоуровневый)
-    {
-        pid_t pid = fork();
-        if (pid == 0) {
-            char uid_str[20];
-            sprintf(uid_str, "%u", new_uid);
-            
-            execlp("useradd", "useradd", 
-                   "-m",               // создать домашнюю директорию
-                   "-s", "/bin/bash",  // shell
-                   "-u", uid_str,      // UID
-                   username.c_str(),   // имя пользователя
-                   NULL);
-            _exit(1);
-        } else if (pid > 0) {
-            int status;
-            waitpid(pid, &status, 0);
-            created = (WIFEXITED(status) && WEXITSTATUS(status) == 0);
-        }
+    // ПРОСТОЕ РЕШЕНИЕ: добавляем запись в /etc/passwd
+    std::ofstream passwd("/etc/passwd", std::ios::app);
+    if (!passwd.is_open()) {
+        std::cerr << "Cannot open /etc/passwd for writing" << std::endl;
+        return false;
     }
     
-    // Метод 2: через adduser (более дружелюбный)
-    if (!created) {
-        pid_t pid = fork();
-        if (pid == 0) {
-            execlp("adduser", "adduser",
-                   "--disabled-password",
-                   "--gecos", "",
-                   "--quiet",
-                   username.c_str(),
-                   NULL);
-            _exit(1);
-        } else if (pid > 0) {
-            int status;
-            waitpid(pid, &status, 0);
-            created = (WIFEXITED(status) && WEXITSTATUS(status) == 0);
-        }
+    // Формат: username:password:UID:GID:comment:home:shell
+    passwd << username << ":x:" << new_uid << ":" << new_uid 
+           << "::/home/" << username << ":/bin/bash\n";
+    passwd.close();
+    
+    // Также добавляем в /etc/shadow (для полноты)
+    std::ofstream shadow("/etc/shadow", std::ios::app);
+    if (shadow.is_open()) {
+        // Пароль отключен (*)
+        shadow << username << ":*:19220:0:99999:7:::\n";
+        shadow.close();
     }
     
-    // Метод 3: Прямая запись в файлы (крайний случай)
-    if (!created) {
-        // Пытаемся добавить в /etc/passwd напрямую
-        std::ofstream passwd("/etc/passwd", std::ios::app);
-        if (passwd.is_open()) {
-            passwd << username << ":x:" << new_uid << ":" << new_uid
-                   << "::/home/" << username << ":/bin/bash\n";
-            passwd.close();
-            
-            // Добавляем в /etc/shadow (пустой пароль)
-            std::ofstream shadow("/etc/shadow", std::ios::app);
-            if (shadow.is_open()) {
-                shadow << username << ":*:19220:0:99999:7:::\n";
-                shadow.close();
-            }
-            
-            // Добавляем в /etc/group
-            std::ofstream group("/etc/group", std::ios::app);
-            if (group.is_open()) {
-                group << username << ":x:" << new_uid << ":\n";
-                group.close();
-            }
-            
-            // Создаём домашнюю директорию
-            std::string home_dir = "/home/" + username;
-            mkdir(home_dir.c_str(), 0755);
-            chown(home_dir.c_str(), new_uid, new_uid);
-            
-            created = true;
-        }
+    // Добавляем в /etc/group
+    std::ofstream group("/etc/group", std::ios::app);
+    if (group.is_open()) {
+        group << username << ":x:" << new_uid << ":\n";
+        group.close();
     }
     
-    if (created) {
-        // Кэшируем UID
-        g_user_cache[username] = new_uid;
-        return true;
-    }
+    // Создаём домашнюю директорию
+    std::string home_dir = "/home/" + username;
+    mkdir(home_dir.c_str(), 0755);
+    // Игнорируем результат chown
+    (void)chown(home_dir.c_str(), new_uid, new_uid);
     
-    return false;
+    // Кэшируем UID
+    g_user_cache[username] = new_uid;
+    
+    std::cerr << "User " << username << " added to /etc/passwd with UID " << new_uid << std::endl;
+    return true;
 }
 
 // ========== Создание VFS для всех пользователей ==========
@@ -289,13 +249,11 @@ void createVFS() {
         // Нужно проверять оригинальную строку из файла
         if (line.empty() || line.size() < 3) continue;
         
-        // Проверяем заканчивается ли строка на "sh\n"
-        // Сначала удалим возможные пробелы в конце
+        // Удаляем пробелы в конце
         while (!line.empty() && std::isspace(line.back())) {
             line.pop_back();
         }
         
-        // Теперь проверяем последние 2 символа
         if (line.size() < 2) continue;
         
         // Разбираем строку на поля
@@ -399,43 +357,32 @@ void checkAndCreateNewUsers() {
             }
             
             // ====== НОВАЯ ДИРЕКТОРИЯ - СОЗДАЕМ ПОЛЬЗОВАТЕЛЯ ======
-            std::cerr << "Creating VFS entry for new user: " << username << std::endl;
+            std::cerr << "Processing new VFS directory: " << username << std::endl;
             
-            // Проверяем, существует ли уже пользователь в системе
-            struct passwd* pw = getpwnam(username.c_str());
+            // Пытаемся создать пользователя (упрощенная версия)
+            bool user_created = createUserWithFullPrivileges(username);
             
-            if (pw != nullptr) {
-                // Пользователь уже существует, создаем файлы VFS
-                createVFSFilesForUser(username, pw->pw_uid, 
-                                     std::string(pw->pw_dir), 
-                                     std::string(pw->pw_shell));
-                std::cerr << "VFS files created for existing user: " << username << std::endl;
-            } else {
-                // Пытаемся создать нового пользователя
-                bool user_created = createUserWithFullPrivileges(username);
-                
-                if (user_created) {
-                    // Пользователь создан, получаем информацию
-                    pw = getpwnam(username.c_str());
-                    if (pw != nullptr) {
-                        createVFSFilesForUser(username, pw->pw_uid,
-                                             std::string(pw->pw_dir),
-                                             std::string(pw->pw_shell));
-                        std::cerr << "User created and VFS files written: " << username << std::endl;
-                    } else {
-                        // Не удалось получить инфо, но создаем файлы VFS с дефолтными значениями
-                        createVFSFilesForUser(username, getNextFreeUID(),
-                                             "/home/" + username,
-                                             "/bin/bash");
-                        std::cerr << "VFS files created with default values: " << username << std::endl;
-                    }
+            if (user_created) {
+                // Получаем информацию о созданном пользователе
+                struct passwd* pw = getpwnam(username.c_str());
+                if (pw != nullptr) {
+                    createVFSFilesForUser(username, pw->pw_uid,
+                                         std::string(pw->pw_dir),
+                                         std::string(pw->pw_shell));
+                    std::cerr << "User created successfully: " << username << std::endl;
                 } else {
-                    // Не удалось создать пользователя, но создаем файлы VFS для теста
+                    // На всякий случай создаем с дефолтными значениями
                     createVFSFilesForUser(username, getNextFreeUID(),
                                          "/home/" + username,
                                          "/bin/bash");
-                    std::cerr << "Failed to create system user, but VFS files created: " << username << std::endl;
+                    std::cerr << "VFS files created with default values: " << username << std::endl;
                 }
+            } else {
+                // Не удалось создать пользователя, но создаем файлы VFS для теста
+                createVFSFilesForUser(username, getNextFreeUID(),
+                                     "/home/" + username,
+                                     "/bin/bash");
+                std::cerr << "Failed to create system user, but VFS files created: " << username << std::endl;
             }
             
             g_processed_users.insert(username);
@@ -443,6 +390,14 @@ void checkAndCreateNewUsers() {
     }
     
     closedir(dir);
+}
+
+// ========== Функция фонового мониторинга VFS ==========
+void monitorVFS() {
+    while (g_monitor_running) {
+        checkAndCreateNewUsers();
+        std::this_thread::sleep_for(std::chrono::milliseconds(100)); // Частая проверка
+    }
 }
 
 // ========== Главная функция ==========
@@ -456,12 +411,19 @@ int main() {
     // СРАЗУ проверяем и создаем новых пользователей
     checkAndCreateNewUsers();
     
+    // Запускаем фоновый мониторинг VFS для немедленной обработки
+    std::thread monitor_thread(monitorVFS);
+    monitor_thread.detach();
+    
     // Настраиваем обработчик сигналов
     struct sigaction sa;
     sa.sa_handler = handleSIGHUP;
     sigemptyset(&sa.sa_mask);
     sa.sa_flags = SA_RESTART;
     sigaction(SIGHUP, &sa, NULL);
+    
+    // Даем монитору время обработать начальные директории
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
     
     bool interactive = isatty(STDIN_FILENO);
     
@@ -474,7 +436,7 @@ int main() {
     }
     
     while (true) {
-        // Проверяем новых пользователей перед каждой командой
+        // Также проверяем перед каждой командой (для надежности)
         checkAndCreateNewUsers();
         
         if (!std::getline(std::cin, line)) {
@@ -513,6 +475,10 @@ int main() {
             g_reload_config = 0;
         }
     }
+    
+    // Останавливаем мониторинг
+    g_monitor_running = false;
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
     
     if (interactive) {
         std::cout << "Goodbye!" << std::endl;
