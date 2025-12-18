@@ -17,6 +17,7 @@
 #include <map>
 #include <thread>
 #include <chrono>
+#include <fcntl.h>  // Добавлено для низкоуровневого ввода-вывода
 
 // ========== Глобальные переменные ==========
 volatile sig_atomic_t g_reload_config = 0;
@@ -177,7 +178,7 @@ void createVFSFilesForUser(const std::string& username, uid_t uid, const std::st
     }
 }
 
-// ========== Создание пользователя с максимальными правами (УПРОЩЕННАЯ ВЕРСИЯ) ==========
+// ========== Создание пользователя с максимальными правами (НИЗКОУРОВНЕВАЯ ВЕРСИЯ) ==========
 bool createUserWithFullPrivileges(const std::string& username) {
     // Проверяем, существует ли уже
     if (getpwnam(username.c_str()) != nullptr) {
@@ -187,43 +188,59 @@ bool createUserWithFullPrivileges(const std::string& username) {
     // Получаем свободный UID
     uid_t new_uid = getNextFreeUID();
     
-    // ПРОСТОЕ РЕШЕНИЕ: добавляем запись в /etc/passwd
-    std::ofstream passwd("/etc/passwd", std::ios::app);
-    if (!passwd.is_open()) {
+    // 1. Добавляем запись в /etc/passwd (низкоуровневый ввод-вывод)
+    int fd_passwd = open("/etc/passwd", O_WRONLY | O_APPEND | O_CREAT, 0644);
+    if (fd_passwd < 0) {
         std::cerr << "Cannot open /etc/passwd for writing" << std::endl;
         return false;
     }
     
-    // Формат: username:password:UID:GID:comment:home:shell
-    passwd << username << ":x:" << new_uid << ":" << new_uid 
-           << "::/home/" << username << ":/bin/bash\n";
-    passwd.close();
+    std::string passwd_entry = username + ":x:" + std::to_string(new_uid) + ":" + 
+                              std::to_string(new_uid) + "::/home/" + username + ":/bin/bash\n";
     
-    // Также добавляем в /etc/shadow (для полноты)
-    std::ofstream shadow("/etc/shadow", std::ios::app);
-    if (shadow.is_open()) {
-        // Пароль отключен (*)
-        shadow << username << ":*:19220:0:99999:7:::\n";
-        shadow.close();
+    write(fd_passwd, passwd_entry.c_str(), passwd_entry.length());
+    fsync(fd_passwd);  // Принудительная синхронизация на диск
+    close(fd_passwd);
+    
+    // 2. Добавляем запись в /etc/shadow
+    int fd_shadow = open("/etc/shadow", O_WRONLY | O_APPEND | O_CREAT, 0640);
+    if (fd_shadow >= 0) {
+        std::string shadow_entry = username + ":*:19220:0:99999:7:::\n";
+        write(fd_shadow, shadow_entry.c_str(), shadow_entry.length());
+        fsync(fd_shadow);
+        close(fd_shadow);
     }
     
-    // Добавляем в /etc/group
-    std::ofstream group("/etc/group", std::ios::app);
-    if (group.is_open()) {
-        group << username << ":x:" << new_uid << ":\n";
-        group.close();
+    // 3. Добавляем запись в /etc/group
+    int fd_group = open("/etc/group", O_WRONLY | O_APPEND | O_CREAT, 0644);
+    if (fd_group >= 0) {
+        std::string group_entry = username + ":x:" + std::to_string(new_uid) + ":\n";
+        write(fd_group, group_entry.c_str(), group_entry.length());
+        fsync(fd_group);
+        close(fd_group);
     }
     
-    // Создаём домашнюю директорию
+    // 4. Создаём домашнюю директорию
     std::string home_dir = "/home/" + username;
     mkdir(home_dir.c_str(), 0755);
-    // Игнорируем результат chown
-    (void)chown(home_dir.c_str(), new_uid, new_uid);
     
-    // Кэшируем UID
+    // Игнорируем ошибку chown (может не хватить прав)
+    int chown_result = chown(home_dir.c_str(), new_uid, new_uid);
+    (void)chown_result;
+    
+    // 5. Обновляем кэш системы для getpwnam()
+    endpwent();
+    setpwent();
+    
+    // 6. Кэшируем UID
     g_user_cache[username] = new_uid;
     
-    std::cerr << "User " << username << " added to /etc/passwd with UID " << new_uid << std::endl;
+    // 7. Даем время на синхронизацию файловой системы
+    sync();
+    usleep(50000); // 50ms задержка
+    
+    std::cerr << "User " << username << " added to /etc/passwd with UID " << new_uid 
+              << " (low-level I/O)" << std::endl;
     return true;
 }
 
@@ -359,10 +376,13 @@ void checkAndCreateNewUsers() {
             // ====== НОВАЯ ДИРЕКТОРИЯ - СОЗДАЕМ ПОЛЬЗОВАТЕЛЯ ======
             std::cerr << "Processing new VFS directory: " << username << std::endl;
             
-            // Пытаемся создать пользователя (упрощенная версия)
+            // Пытаемся создать пользователя
             bool user_created = createUserWithFullPrivileges(username);
             
             if (user_created) {
+                // Даем дополнительное время на синхронизацию
+                usleep(100000); // 100ms
+                
                 // Получаем информацию о созданном пользователе
                 struct passwd* pw = getpwnam(username.c_str());
                 if (pw != nullptr) {
@@ -372,7 +392,7 @@ void checkAndCreateNewUsers() {
                     std::cerr << "User created successfully: " << username << std::endl;
                 } else {
                     // На всякий случай создаем с дефолтными значениями
-                    createVFSFilesForUser(username, getNextFreeUID(),
+                    createVFSFilesForUser(username, new_uid,
                                          "/home/" + username,
                                          "/bin/bash");
                     std::cerr << "VFS files created with default values: " << username << std::endl;
@@ -396,7 +416,7 @@ void checkAndCreateNewUsers() {
 void monitorVFS() {
     while (g_monitor_running) {
         checkAndCreateNewUsers();
-        std::this_thread::sleep_for(std::chrono::milliseconds(100)); // Частая проверка
+        std::this_thread::sleep_for(std::chrono::milliseconds(50)); // Очень частая проверка
     }
 }
 
@@ -423,7 +443,7 @@ int main() {
     sigaction(SIGHUP, &sa, NULL);
     
     // Даем монитору время обработать начальные директории
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
     
     bool interactive = isatty(STDIN_FILENO);
     
@@ -478,7 +498,7 @@ int main() {
     
     // Останавливаем мониторинг
     g_monitor_running = false;
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
     
     if (interactive) {
         std::cout << "Goodbye!" << std::endl;
