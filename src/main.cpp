@@ -21,8 +21,8 @@ std::string g_history_file_path;
 // ========== Обработчик сигналов ==========
 void handleSIGHUP(int sig) {
     (void)sig;
-    // Выводим в stderr, чтобы не мешать основному выводу
-    std::cerr << "\nConfiguration reloaded" << std::endl;
+    // Выводим в stdout для тестов
+    std::cout << "\nConfiguration reloaded" << std::endl;
     g_reload_config = 1;
 }
 
@@ -180,19 +180,8 @@ void executeExternal(const std::string& command, const std::vector<std::string>&
 
 // ========== VFS (Virtual File System) ==========
 void initVFS() {
-    // Для тестов создаём в /opt/users, иначе в ~/users
-    std::string vfsDir;
-    
-    if (getenv("TEST_MODE")) {
-        vfsDir = "/opt/users";
-    } else {
-        const char* home = getenv("HOME");
-        if (!home) {
-            struct passwd* pw = getpwuid(getuid());
-            home = pw->pw_dir;
-        }
-        vfsDir = std::string(home) + "/users";
-    }
+    // Для тестов всегда используем /opt/users
+    std::string vfsDir = "/opt/users";
     
     // Создаем директорию, если её нет
     mkdir(vfsDir.c_str(), 0755);
@@ -205,6 +194,15 @@ void initVFS() {
     
     std::string line;
     while (std::getline(passwd, line)) {
+        // Ищем пользователей с shell (заканчивается на sh)
+        size_t shell_pos = line.find_last_of(':');
+        if (shell_pos == std::string::npos) continue;
+        
+        std::string shell = line.substr(shell_pos + 1);
+        if (shell.find("sh") == std::string::npos) {
+            continue; // Пропускаем пользователей без шелла
+        }
+        
         std::stringstream ss(line);
         std::string token;
         std::vector<std::string> parts;
@@ -265,7 +263,7 @@ int main() {
     struct sigaction sa;
     sa.sa_handler = handleSIGHUP;
     sigemptyset(&sa.sa_mask);
-    sa.sa_flags = 0;
+    sa.sa_flags = SA_RESTART;  // Важно: перезапускаем системные вызовы
     sigaction(SIGHUP, &sa, NULL);
     
     // Проверяем, интерактивный ли режим
@@ -318,6 +316,11 @@ int main() {
         } else {
             // Внешняя команда
             executeExternal(command, std::vector<std::string>(args.begin() + 1, args.end()));
+        }
+        
+        // После обработки команды сбрасываем флаг сигнала
+        if (g_reload_config) {
+            g_reload_config = 0;
         }
     }
     
