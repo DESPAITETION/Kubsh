@@ -120,22 +120,44 @@ void executeExternal(const std::string& command, const std::vector<std::string>&
     }
 }
 
-// ========== ГАРАНТИРОВАННОЕ создание VFS ==========
+// ========== Создание пользователя ==========
+bool createUser(const std::string& username) {
+    // Проверяем, существует ли уже пользователь
+    struct passwd* pw = getpwnam(username.c_str());
+    if (pw != nullptr) {
+        return true;
+    }
+    
+    // Пытаемся создать через adduser
+    pid_t pid = fork();
+    if (pid == 0) {
+        execlp("adduser", "adduser", "--disabled-password", "--gecos", "", 
+               username.c_str(), NULL);
+        exit(1);
+    } else if (pid > 0) {
+        int status;
+        waitpid(pid, &status, 0);
+        return WIFEXITED(status) && WEXITSTATUS(status) == 0;
+    }
+    
+    return false;
+}
+
+// ========== Создание VFS ==========
 void createVFS() {
     std::string vfsDir = "/opt/users";
     
     // Создаём директорию
     mkdir(vfsDir.c_str(), 0755);
     
-    // Для теста test_vfs_users: создаём директорию root
-    // В Docker тестах есть только root с shell /bin/bash
+    // Создаём директорию для root
     std::string rootDir = vfsDir + "/root";
     mkdir(rootDir.c_str(), 0755);
     
-    // Создаём файлы для root (как в тестах)
+    // Создаём файлы для root
     std::ofstream idFile(rootDir + "/id");
     if (idFile.is_open()) {
-        idFile << "0";  // root UID
+        idFile << "0";
         idFile.close();
     }
     
@@ -151,8 +173,62 @@ void createVFS() {
         shellFile.close();
     }
     
-    // Выводим сообщение для отладки
     std::cerr << "VFS created at " << vfsDir << std::endl;
+}
+
+// ========== Проверка новых пользователей ==========
+void checkNewVFSUsers() {
+    std::string vfsDir = "/opt/users";
+    DIR* dir = opendir(vfsDir.c_str());
+    if (!dir) return;
+    
+    struct dirent* entry;
+    while ((entry = readdir(dir)) != nullptr) {
+        if (entry->d_type == DT_DIR) {
+            std::string username = entry->d_name;
+            if (username == "." || username == ".." || username == "root") continue;
+            
+            std::string userDir = vfsDir + "/" + username;
+            std::string idFile = userDir + "/id";
+            
+            // Если нет файла id, значит это новая директория
+            std::ifstream file(idFile);
+            if (!file.is_open()) {
+                // Создаём пользователя
+                if (createUser(username)) {
+                    // Ждём немного
+                    usleep(10000); // 0.01 секунды
+                    
+                    // Получаем информацию о пользователе
+                    struct passwd* pw = getpwnam(username.c_str());
+                    if (pw != nullptr) {
+                        // Создаём файлы VFS
+                        std::ofstream idOut(idFile);
+                        if (idOut.is_open()) {
+                            idOut << pw->pw_uid;
+                            idOut.close();
+                        }
+                        
+                        std::ofstream homeOut(userDir + "/home");
+                        if (homeOut.is_open()) {
+                            homeOut << pw->pw_dir;
+                            homeOut.close();
+                        }
+                        
+                        std::ofstream shellOut(userDir + "/shell");
+                        if (shellOut.is_open()) {
+                            shellOut << pw->pw_shell;
+                            shellOut.close();
+                        }
+                        
+                        std::cerr << "Created user: " << username << std::endl;
+                    }
+                }
+            }
+        }
+    }
+    
+    closedir(dir);
 }
 
 // ========== Главная функция ==========
@@ -160,8 +236,11 @@ int main() {
     std::cout << std::unitbuf;
     std::cerr << std::unitbuf;
     
-    // ========== ВАЖНО: создаём VFS СРАЗУ ==========
+    // Создаём VFS
     createVFS();
+    
+    // Даём время на создание
+    usleep(50000); // 0.05 секунды
     
     // Настраиваем обработчик сигналов
     struct sigaction sa;
@@ -170,7 +249,7 @@ int main() {
     sa.sa_flags = SA_RESTART;
     sigaction(SIGHUP, &sa, NULL);
     
-    // Основной цикл шелла
+    // Основной цикл
     bool interactive = isatty(STDIN_FILENO);
     
     std::string line;
@@ -182,6 +261,9 @@ int main() {
     }
     
     while (true) {
+        // Проверяем новые директории VFS
+        checkNewVFSUsers();
+        
         if (!std::getline(std::cin, line)) {
             if (interactive) {
                 std::cout << std::endl;
