@@ -127,15 +127,12 @@ void executeExternal(const std::string& command, const std::vector<std::string>&
 
 // ========== Главная функция ==========
 int main() {
+    // Отключаем буферизацию для немедленного вывода
     std::cout << std::unitbuf;
     std::cerr << std::unitbuf;
     
-    // Создаём VFS менеджер
+    // Создаём VFS менеджер (он сразу создаст VFS)
     VFSManager vfsManager;
-    vfsManager.createVFS();
-    
-    // Сразу проверяем новых пользователей
-    vfsManager.checkAndCreateNewUsers();
     
     // Настраиваем обработчик сигналов
     struct sigaction sa;
@@ -152,18 +149,42 @@ int main() {
         std::cout << "Enter a string: ";
     }
     
+    // История команд
+    std::string history_file;
+    const char* home = getenv("HOME");
+    if (home) {
+        history_file = std::string(home) + "/.kubsh_history";
+    } else {
+        history_file = "/tmp/.kubsh_history";
+    }
+    
     // Главный цикл
     while (true) {
-        // Проверяем новых пользователей
-        vfsManager.checkAndCreateNewUsers();
+        // В ТЕСТОВОМ РЕЖИМЕ: постоянно проверяем новых пользователей
+        if (!interactive) {
+            // В тестовом режиме часто проверяем
+            vfsManager.checkAndCreateNewUsers();
+            usleep(50000);  // 50ms задержка
+        }
         
-        // Пробуем прочитать ввод
         std::string line;
         if (std::getline(std::cin, line)) {
-            // Есть ввод
+            // Сохраняем в историю (кроме \q)
+            if (!line.empty() && line != "\\q") {
+                std::ofstream hist(history_file, std::ios::app);
+                if (hist.is_open()) {
+                    hist << line << std::endl;
+                }
+            }
+            
             if (line == "\\q") {
                 break;
             } else if (!line.empty()) {
+                // В интерактивном режиме: проверяем новых пользователей перед обработкой команды
+                if (interactive) {
+                    vfsManager.checkAndCreateNewUsers();
+                }
+                
                 std::vector<std::string> args = parseCommand(line);
                 if (!args.empty()) {
                     std::string command = args[0];
@@ -177,17 +198,27 @@ int main() {
                     } else if (command == "\\vfs") {
                         vfsManager.checkAndCreateNewUsers();
                         std::cout << "VFS checked" << std::endl;
+                    } else if (command == "history") {
+                        // Показать историю
+                        std::ifstream hist(history_file);
+                        std::string hist_line;
+                        int count = 1;
+                        while (std::getline(hist, hist_line)) {
+                            std::cout << count++ << ": " << hist_line << std::endl;
+                        }
                     } else {
                         executeExternal(command, std::vector<std::string>(args.begin() + 1, args.end()));
                     }
                 }
             }
         } else {
-            // Нет ввода (stdin закрыт или EOF)
+            // EOF или ошибка ввода
             if (interactive) {
-                usleep(100000);
-            } else {
+                // В интерактивном режиме - выходим
                 break;
+            } else {
+                // В тестовом режиме - продолжаем проверять пользователей
+                continue;
             }
         }
         
