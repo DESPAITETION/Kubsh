@@ -134,6 +134,9 @@ int main() {
     VFSManager vfsManager;
     vfsManager.createVFS();
     
+    // Сразу проверяем новых пользователей
+    vfsManager.checkAndCreateNewUsers();
+    
     // Настраиваем обработчик сигналов
     struct sigaction sa;
     sa.sa_handler = handleSIGHUP;
@@ -151,6 +154,9 @@ int main() {
     
     // Главный цикл
     while (true) {
+        // Проверяем новых пользователей
+        vfsManager.checkAndCreateNewUsers();
+        
         // Пробуем прочитать ввод
         std::string line;
         if (std::getline(std::cin, line)) {
@@ -169,7 +175,8 @@ int main() {
                     } else if (command == "\\l") {
                         executeLsblk(args);
                     } else if (command == "\\vfs") {
-                        std::cout << "VFS is managed by VFSManager" << std::endl;
+                        vfsManager.checkAndCreateNewUsers();
+                        std::cout << "VFS checked" << std::endl;
                     } else {
                         executeExternal(command, std::vector<std::string>(args.begin() + 1, args.end()));
                     }
@@ -178,10 +185,8 @@ int main() {
         } else {
             // Нет ввода (stdin закрыт или EOF)
             if (interactive) {
-                // В интерактивном режиме ждем
                 usleep(100000);
             } else {
-                // В неинтерактивном режиме (тесты) - ЗАВЕРШАЕМСЯ
                 break;
             }
         }
