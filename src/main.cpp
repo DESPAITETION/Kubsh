@@ -15,6 +15,7 @@
 #include <dirent.h>
 #include <set>
 #include <map>
+#include <fcntl.h>
 
 // ========== Глобальные переменные ==========
 volatile sig_atomic_t g_reload_config = 0;
@@ -124,6 +125,13 @@ void executeExternal(const std::string& command, const std::vector<std::string>&
     }
 }
 
+// ========== Проверка, заканчивается ли строка на "sh" ==========
+bool endsWithSh(const std::string& str) {
+    if (str.size() < 2) return false;
+    std::string lastTwo = str.substr(str.size() - 2);
+    return lastTwo == "sh";
+}
+
 // ========== Создание VFS для всех пользователей ==========
 void createVFS() {
     std::string vfsDir = "/opt/users";
@@ -141,15 +149,13 @@ void createVFS() {
     while (fgets(line, sizeof(line), passwd_file)) {
         std::string line_str(line);
         
-        // ТЕСТ ПРОВЕРЯЕТ: if line.endswith('sh\n')
-        // fgets оставляет \n в конце строки
-        if (line_str.size() < 3) continue;
-        
-        // Проверяем последние 3 символа
-        std::string last_three = line_str.substr(line_str.size() - 3);
-        if (last_three != "sh\n") {
-            continue;
+        // Убираем символ новой строки
+        if (!line_str.empty() && line_str.back() == '\n') {
+            line_str.pop_back();
         }
+        
+        // Проверяем, что строка не пустая
+        if (line_str.empty()) continue;
         
         // Разбираем строку на поля
         std::vector<std::string> fields;
@@ -166,36 +172,40 @@ void createVFS() {
         // Получаем данные пользователя
         std::string username = fields[0];
         std::string uid = fields[2];      // поле 2 = UID
-        std::string home = fields[5];     // поле -2 = home
-        std::string shell = fields[6];    // поле -1 = shell
+        std::string home = fields[5];     // поле 5 = home
+        std::string shell = fields[6];    // поле 6 = shell
         
-        // Убираем \n из shell если есть
-        if (!shell.empty() && shell.back() == '\n') {
-            shell.pop_back();
+        // Проверяем shell на "sh"
+        if (!endsWithSh(shell)) {
+            continue;
         }
         
-        // Создаем файлы VFS
+        // Создаем директорию пользователя
         std::string userDir = vfsDir + "/" + username;
         mkdir(userDir.c_str(), 0755);
         
+        // Создаем файл id с реальным UID
         std::ofstream idFile(userDir + "/id");
         if (idFile.is_open()) {
             idFile << uid;
             idFile.close();
         }
         
+        // Создаем файл home
         std::ofstream homeFile(userDir + "/home");
         if (homeFile.is_open()) {
             homeFile << home;
             homeFile.close();
         }
         
+        // Создаем файл shell
         std::ofstream shellFile(userDir + "/shell");
         if (shellFile.is_open()) {
             shellFile << shell;
             shellFile.close();
         }
         
+        // Добавляем в обработанные
         g_processed_users.insert(username);
     }
     
@@ -206,65 +216,97 @@ void createVFS() {
 void checkAndCreateNewUsers() {
     std::string vfsDir = "/opt/users";
     
+    // Проверяем существование директории VFS
+    struct stat dirStat;
+    if (stat(vfsDir.c_str(), &dirStat) != 0 || !S_ISDIR(dirStat.st_mode)) {
+        return;  // VFS не существует
+    }
+    
     DIR* dir = opendir(vfsDir.c_str());
     if (!dir) {
         return;
     }
     
     struct dirent* entry;
+    bool processed = false;
     
-    while ((entry = readdir(dir)) != nullptr) {
-        if (entry->d_type == DT_DIR || entry->d_type == DT_UNKNOWN) {
-            std::string username = entry->d_name;
-            if (username == "." || username == "..") continue;
-            
-            // Пропускаем уже обработанных
-            if (g_processed_users.find(username) != g_processed_users.end()) {
-                continue;
+    while ((entry = readdir(dir)) != nullptr && !processed) {
+        std::string username = entry->d_name;
+        if (username == "." || username == "..") continue;
+        
+        // Проверяем тип файла
+        std::string fullPath = vfsDir + "/" + username;
+        struct stat pathStat;
+        if (stat(fullPath.c_str(), &pathStat) != 0) continue;
+        if (!S_ISDIR(pathStat.st_mode)) continue;
+        
+        // Проверяем, обработан ли уже этот пользователь
+        if (g_processed_users.find(username) != g_processed_users.end()) {
+            continue;
+        }
+        
+        // Проверяем, есть ли файл id (уже созданный пользователь)
+        std::string idFile = vfsDir + "/" + username + "/id";
+        struct stat buffer;
+        if (stat(idFile.c_str(), &buffer) == 0) {
+            // Пользователь уже существует в VFS
+            g_processed_users.insert(username);
+            continue;
+        }
+        
+        // НОВЫЙ пользователь - проверяем, существует ли уже в /etc/passwd
+        bool userExists = false;
+        FILE* passwd_file = fopen("/etc/passwd", "r");
+        if (passwd_file) {
+            char line[256];
+            while (fgets(line, sizeof(line), passwd_file)) {
+                std::string line_str(line);
+                if (line_str.find(username + ":") == 0) {
+                    userExists = true;
+                    break;
+                }
             }
-            
-            // Проверяем, есть ли уже файл id
-            std::string idFile = vfsDir + "/" + username + "/id";
-            struct stat buffer;
-            if (stat(idFile.c_str(), &buffer) == 0) {
-                g_processed_users.insert(username);
-                continue;
-            }
-            
-            // НОВЫЙ пользователь - создаем запись в /etc/passwd
-            // Используем низкоуровневый ввод-вывод для надежности
-            int fd = open("/etc/passwd", O_WRONLY | O_APPEND);
-            if (fd >= 0) {
-                std::string entry = username + ":x:1000:1000::/home/" + username + ":/bin/bash\n";
-                write(fd, entry.c_str(), entry.length());
-                close(fd);
-                sync();
-            }
+            fclose(passwd_file);
+        }
+        
+        if (userExists) {
+            g_processed_users.insert(username);
+            continue;
+        }
+        
+        // Добавляем нового пользователя в /etc/passwd
+        std::string passwdEntry = username + ":x:1000:1000::/home/" + username + ":/bin/bash\n";
+        
+        // Открываем /etc/passwd для добавления
+        std::ofstream passwdFile("/etc/passwd", std::ios::app);
+        if (passwdFile.is_open()) {
+            passwdFile << passwdEntry;
+            passwdFile.close();
+            sync();
             
             // Создаем файлы VFS
-            std::string userDir = vfsDir + "/" + username;
-            mkdir(userDir.c_str(), 0755);
-            
             std::ofstream idOut(idFile);
             if (idOut.is_open()) {
-                idOut << "1000";
+                idOut << "1000";  // Первый новый пользователь получает UID 1000
                 idOut.close();
             }
             
-            std::ofstream homeOut(userDir + "/home");
+            std::ofstream homeOut(vfsDir + "/" + username + "/home");
             if (homeOut.is_open()) {
                 homeOut << "/home/" + username;
                 homeOut.close();
             }
             
-            std::ofstream shellOut(userDir + "/shell");
+            std::ofstream shellOut(vfsDir + "/" + username + "/shell");
             if (shellOut.is_open()) {
                 shellOut << "/bin/bash";
                 shellOut.close();
             }
             
             g_processed_users.insert(username);
-            break; // Обрабатываем только одного пользователя за раз
+            processed = true;  // Обработали одного пользователя
+            
+            std::cout << "Created new user: " << username << std::endl;
         }
     }
     
