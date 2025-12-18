@@ -3,7 +3,7 @@
 
 # Переменные
 CXX := g++
-CXXFLAGS := -std=c++17 -Wall -Wextra -O2 -g
+CXXFLAGS := -std=c++17 -Wall -Wextra -O2 -g -pthread  # ДОБАВЬТЕ -pthread
 TARGET := kubsh  # ИЗМЕНЕНО: было Kubsh, стало kubsh (строчными)
 SRC_DIR := src
 SOURCES := src/main.cpp  # Вместо $(wildcard $(SRC_DIR)/*.cpp)
