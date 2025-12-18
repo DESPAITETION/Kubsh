@@ -36,4 +36,3 @@ deb-packaging/DEBIAN/   # ← ИЗМЕНЕНО
 CMakeCache.txt
 CMakeFiles/
 cmake_install.cmake
-Makefile
