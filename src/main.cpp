@@ -21,7 +21,8 @@ std::string g_history_file_path;
 // ========== Обработчик сигналов ==========
 void handleSIGHUP(int sig) {
     (void)sig;
-    std::cout << "\nConfiguration reloaded" << std::endl;
+    // Выводим в stderr, чтобы не мешать основному выводу
+    std::cerr << "\nConfiguration reloaded" << std::endl;
     g_reload_config = 1;
 }
 
@@ -92,10 +93,15 @@ void printCommandNotFound(const std::string& cmd) {
     std::cout << cmd << ": command not found" << std::endl;
 }
 
-// ========== Команда echo ==========
+// ========== Команда echo/debug ==========
 void executeEcho(const std::vector<std::string>& args) {
     for (size_t i = 1; i < args.size(); ++i) {
-        std::cout << args[i];
+        // Убираем кавычки, если они есть
+        std::string arg = args[i];
+        if (arg.size() >= 2 && arg.front() == '\'' && arg.back() == '\'') {
+            arg = arg.substr(1, arg.size() - 2);
+        }
+        std::cout << arg;
         if (i != args.size() - 1) std::cout << " ";
     }
     std::cout << std::endl;
@@ -174,14 +180,19 @@ void executeExternal(const std::string& command, const std::vector<std::string>&
 
 // ========== VFS (Virtual File System) ==========
 void initVFS() {
-    // Получаем домашнюю директорию
-    const char* home = getenv("HOME");
-    if (!home) {
-        struct passwd* pw = getpwuid(getuid());
-        home = pw->pw_dir;
-    }
+    // Для тестов создаём в /opt/users, иначе в ~/users
+    std::string vfsDir;
     
-    std::string vfsDir = std::string(home) + "/users";
+    if (getenv("TEST_MODE")) {
+        vfsDir = "/opt/users";
+    } else {
+        const char* home = getenv("HOME");
+        if (!home) {
+            struct passwd* pw = getpwuid(getuid());
+            home = pw->pw_dir;
+        }
+        vfsDir = std::string(home) + "/users";
+    }
     
     // Создаем директорию, если её нет
     mkdir(vfsDir.c_str(), 0755);
@@ -298,7 +309,7 @@ int main() {
             break;
         } else if (command == "history") {
             printHistory();
-        } else if (command == "echo") {
+        } else if (command == "echo" || command == "debug") {
             executeEcho(args);
         } else if (command == "\\e") {
             executeEnv(args);
