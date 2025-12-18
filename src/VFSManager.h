@@ -10,7 +10,6 @@ private:
 public:
     VFSManager();
     void createVFS();
-    void checkAndCreateNewUsers();  // Без параметра
 };
 
 #endif
