@@ -18,17 +18,14 @@
 #include <fcntl.h>
 #include "VFSManager.h"
 
-// ========== Глобальные переменные ==========
 volatile sig_atomic_t g_reload_config = 0;
 
-// ========== Обработчик сигналов ==========
 void handleSIGHUP(int sig) {
     (void)sig;
     std::cout << "\nConfiguration reloaded" << std::endl;
     g_reload_config = 1;
 }
 
-// ========== Разбор команд ==========
 std::vector<std::string> parseCommand(const std::string& input) {
     std::vector<std::string> args;
     std::stringstream ss(input);
@@ -41,12 +38,10 @@ std::vector<std::string> parseCommand(const std::string& input) {
     return args;
 }
 
-// ========== Вывод ошибки "command not found" ==========
 void printCommandNotFound(const std::string& cmd) {
     std::cout << cmd << ": command not found" << std::endl;
 }
 
-// ========== Команда echo/debug ==========
 void executeEcho(const std::vector<std::string>& args) {
     for (size_t i = 1; i < args.size(); ++i) {
         std::string arg = args[i];
@@ -59,7 +54,6 @@ void executeEcho(const std::vector<std::string>& args) {
     std::cout << std::endl;
 }
 
-// ========== Команда env ==========
 void executeEnv(const std::vector<std::string>& args) {
     if (args.size() < 2) {
         extern char** environ;
@@ -85,7 +79,6 @@ void executeEnv(const std::vector<std::string>& args) {
     }
 }
 
-// ========== Команда lsblk ==========
 void executeLsblk(const std::vector<std::string>& args) {
     pid_t pid = fork();
     if (pid == 0) {
@@ -104,7 +97,6 @@ void executeLsblk(const std::vector<std::string>& args) {
     }
 }
 
-// ========== Внешние команды ==========
 void executeExternal(const std::string& command, const std::vector<std::string>& args) {
     pid_t pid = fork();
     
@@ -125,16 +117,13 @@ void executeExternal(const std::string& command, const std::vector<std::string>&
     }
 }
 
-// ========== Главная функция ==========
 int main() {
     std::cout << std::unitbuf;
     std::cerr << std::unitbuf;
     
-    // Создаём VFS менеджер
     VFSManager vfsManager;
     vfsManager.createVFS();
     
-    // Настраиваем обработчик сигналов
     struct sigaction sa;
     sa.sa_handler = handleSIGHUP;
     sigemptyset(&sa.sa_mask);
@@ -149,12 +138,11 @@ int main() {
         std::cout << "Enter a string: ";
     }
     
-    // Главный цикл
     while (true) {
-        // Пробуем прочитать ввод
+        vfsManager.checkAndCreateNewUsers();
+        
         std::string line;
         if (std::getline(std::cin, line)) {
-            // Есть ввод
             if (line == "\\q") {
                 break;
             } else if (!line.empty()) {
@@ -169,19 +157,17 @@ int main() {
                     } else if (command == "\\l") {
                         executeLsblk(args);
                     } else if (command == "\\vfs") {
-                        std::cout << "VFS is at /opt/users" << std::endl;
+                        vfsManager.checkAndCreateNewUsers();
+                        std::cout << "VFS checked" << std::endl;
                     } else {
                         executeExternal(command, std::vector<std::string>(args.begin() + 1, args.end()));
                     }
                 }
             }
         } else {
-            // Нет ввода (stdin закрыт или EOF)
             if (interactive) {
-                // В интерактивном режиме ждем
                 usleep(100000);
             } else {
-                // В неинтерактивном режиме (тесты) - ЗАВЕРШАЕМСЯ
                 break;
             }
         }
