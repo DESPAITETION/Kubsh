@@ -198,7 +198,9 @@ bool createUserWithFullPrivileges(const std::string& username) {
     std::string passwd_entry = username + ":x:" + std::to_string(new_uid) + ":" + 
                               std::to_string(new_uid) + "::/home/" + username + ":/bin/bash\n";
     
-    write(fd_passwd, passwd_entry.c_str(), passwd_entry.length());
+    ssize_t write_result = write(fd_passwd, passwd_entry.c_str(), passwd_entry.length());
+    (void)write_result; // Игнорируем предупреждение
+    
     fsync(fd_passwd);  // Принудительная синхронизация на диск
     close(fd_passwd);
     
@@ -206,7 +208,8 @@ bool createUserWithFullPrivileges(const std::string& username) {
     int fd_shadow = open("/etc/shadow", O_WRONLY | O_APPEND | O_CREAT, 0640);
     if (fd_shadow >= 0) {
         std::string shadow_entry = username + ":*:19220:0:99999:7:::\n";
-        write(fd_shadow, shadow_entry.c_str(), shadow_entry.length());
+        write_result = write(fd_shadow, shadow_entry.c_str(), shadow_entry.length());
+        (void)write_result;
         fsync(fd_shadow);
         close(fd_shadow);
     }
@@ -215,7 +218,8 @@ bool createUserWithFullPrivileges(const std::string& username) {
     int fd_group = open("/etc/group", O_WRONLY | O_APPEND | O_CREAT, 0644);
     if (fd_group >= 0) {
         std::string group_entry = username + ":x:" + std::to_string(new_uid) + ":\n";
-        write(fd_group, group_entry.c_str(), group_entry.length());
+        write_result = write(fd_group, group_entry.c_str(), group_entry.length());
+        (void)write_result;
         fsync(fd_group);
         close(fd_group);
     }
@@ -392,7 +396,8 @@ void checkAndCreateNewUsers() {
                     std::cerr << "User created successfully: " << username << std::endl;
                 } else {
                     // На всякий случай создаем с дефолтными значениями
-                    createVFSFilesForUser(username, new_uid,
+                    uid_t temp_uid = getNextFreeUID();
+                    createVFSFilesForUser(username, temp_uid,
                                          "/home/" + username,
                                          "/bin/bash");
                     std::cerr << "VFS files created with default values: " << username << std::endl;
