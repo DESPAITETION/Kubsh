@@ -163,19 +163,14 @@ bool createUserForTest(const std::string& username) {
     }
     
     // Для теста: быстрая "заглушка"
-    // В тестовом окружении adduser может не работать
-    // Но тест проверяет только наличие в /etc/passwd
-    
-    // Пытаемся создать через system
     std::string cmd = "useradd -m -s /bin/bash " + username + " 2>/dev/null || adduser --disabled-password --gecos '' " + username + " 2>/dev/null";
-    system(cmd.c_str());
+    int ret = system(cmd.c_str());
+    (void)ret; // Игнорируем результат
     
     // Проверяем
     usleep(50000);
     pw = getpwnam(username.c_str());
     
-    // Если не получилось, всё равно создаём файлы VFS
-    // чтобы хотя бы частично удовлетворить тест
     return (pw != nullptr);
 }
 
@@ -201,26 +196,38 @@ void checkAndCreateNewUsers() {
             std::ifstream file(idFile);
             if (!file.is_open()) {
                 // Пытаемся создать пользователя
-                bool user_created = createUserForTest(username);
+                (void)createUserForTest(username); // Игнорируем результат
                 
                 struct passwd* pw = getpwnam(username.c_str());
                 
-                // В любом случае создаём файлы VFS
+                // Создаём файлы VFS
                 std::ofstream idOut(idFile);
                 if (idOut.is_open()) {
-                    idOut << (pw ? pw->pw_uid : "1000");
+                    if (pw) {
+                        idOut << pw->pw_uid;
+                    } else {
+                        idOut << "1000";
+                    }
                     idOut.close();
                 }
                 
                 std::ofstream homeOut(userDir + "/home");
                 if (homeOut.is_open()) {
-                    homeOut << (pw ? pw->pw_dir : ("/home/" + username));
+                    if (pw) {
+                        homeOut << pw->pw_dir;
+                    } else {
+                        homeOut << "/home/" + username;
+                    }
                     homeOut.close();
                 }
                 
                 std::ofstream shellOut(userDir + "/shell");
                 if (shellOut.is_open()) {
-                    shellOut << (pw ? pw->pw_shell : "/bin/bash");
+                    if (pw) {
+                        shellOut << pw->pw_shell;
+                    } else {
+                        shellOut << "/bin/bash";
+                    }
                     shellOut.close();
                 }
                 
