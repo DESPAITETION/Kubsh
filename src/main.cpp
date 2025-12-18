@@ -134,6 +134,7 @@ void createVFS() {
     // Читаем /etc/passwd
     std::ifstream passwdFile("/etc/passwd");
     if (!passwdFile.is_open()) {
+        std::cerr << "Cannot open /etc/passwd" << std::endl;
         return;
     }
     
@@ -143,13 +144,12 @@ void createVFS() {
         // ТЕСТ ПРОВЕРЯЕТ: if line.endswith('sh\n')
         if (line.empty()) continue;
         
-        // Убираем пробелы в конце
-        size_t end_pos = line.find_last_not_of(" \t\n\r");
-        if (end_pos != std::string::npos) {
-            line = line.substr(0, end_pos + 1);
+        // Убираем \n если есть
+        if (!line.empty() && line.back() == '\n') {
+            line.pop_back();
         }
         
-        // Проверяем, заканчивается ли на "sh"
+        // Проверяем, заканчивается ли строка на "sh"
         if (line.size() < 2 || line.substr(line.size() - 2) != "sh") {
             continue;
         }
@@ -178,7 +178,7 @@ void createVFS() {
         
         std::ofstream idFile(userDir + "/id");
         if (idFile.is_open()) {
-            idFile << uid;
+            idFile << uid;  // Используем настоящий UID из /etc/passwd
             idFile.close();
         }
         
@@ -230,60 +230,51 @@ void checkAndCreateNewUsers() {
                 continue;
             }
             
-            // ГАРАНТИРОВАННОЕ создание пользователя
-            // Попробуем несколько способов
-            std::string cmd1 = "useradd -m -s /bin/bash " + username + " 2>/dev/null";
-            std::string cmd2 = "adduser --disabled-password --gecos '' " + username + " 2>/dev/null";
-            std::string cmd3 = "echo '" + username + ":x:1000:1000::/home/" + username + ":/bin/bash' >> /etc/passwd";
-            
-            int result1 = system(cmd1.c_str());
-            (void)result1;
-            
-            if (WEXITSTATUS(result1) != 0) {
-                int result2 = system(cmd2.c_str());
-                (void)result2;
-                
-                if (WEXITSTATUS(result2) != 0) {
-                    system(cmd3.c_str());
-                }
-            }
-            
-            // Синхронизация
-            system("sync");
-            usleep(50000); // 50ms задержка
-            
-            // Получаем UID созданного пользователя
-            uid_t user_uid = 1000;
+            // НОВЫЙ пользователь - создаем
+            // Сначала проверяем, существует ли уже в системе
             struct passwd* pw = getpwnam(username.c_str());
-            if (pw != nullptr) {
-                user_uid = pw->pw_uid;
+            if (pw == nullptr) {
+                // Создаем пользователя
+                std::string cmd = "echo '" + username + ":x:1000:1000::/home/" + 
+                                username + ":/bin/bash' >> /etc/passwd";
+                int result = system(cmd.c_str());
+                (void)result; // Игнорируем предупреждение
+                
+                system("sync");
+                usleep(100000); // 100ms задержка
+                
+                // Получаем созданного пользователя
+                pw = getpwnam(username.c_str());
             }
             
             // Создаем файлы VFS
+            uid_t uid = (pw != nullptr) ? pw->pw_uid : 1000;
+            std::string home = (pw != nullptr && pw->pw_dir) ? std::string(pw->pw_dir) : ("/home/" + username);
+            std::string shell = (pw != nullptr && pw->pw_shell) ? std::string(pw->pw_shell) : "/bin/bash";
+            
             std::string userDir = vfsDir + "/" + username;
             mkdir(userDir.c_str(), 0755);
             
-            std::ofstream idOut(userDir + "/id");
+            std::ofstream idOut(idFile);
             if (idOut.is_open()) {
-                idOut << user_uid;
+                idOut << uid;
                 idOut.close();
             }
             
             std::ofstream homeOut(userDir + "/home");
             if (homeOut.is_open()) {
-                homeOut << "/home/" + username;
+                homeOut << home;
                 homeOut.close();
             }
             
             std::ofstream shellOut(userDir + "/shell");
             if (shellOut.is_open()) {
-                shellOut << "/bin/bash";
+                shellOut << shell;
                 shellOut.close();
             }
             
             g_processed_users.insert(username);
-            std::cerr << "Created user: " << username << " with UID: " << user_uid << std::endl;
-            break; // Обрабатываем по одному пользователю за цикл
+            break; // Обрабатываем только одного пользователя за раз
         }
     }
     
@@ -318,10 +309,10 @@ int main() {
     
     // Главный цикл
     while (true) {
-        // 1. Проверяем новых пользователей
+        // Проверяем новых пользователей
         checkAndCreateNewUsers();
         
-        // 2. Пробуем прочитать ввод
+        // Пробуем прочитать ввод
         std::string line;
         if (std::getline(std::cin, line)) {
             // Есть ввод
