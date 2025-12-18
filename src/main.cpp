@@ -18,14 +18,17 @@
 #include <fcntl.h>
 #include "VFSManager.h"
 
+// ========== Глобальные переменные ==========
 volatile sig_atomic_t g_reload_config = 0;
 
+// ========== Обработчик сигналов ==========
 void handleSIGHUP(int sig) {
     (void)sig;
     std::cout << "\nConfiguration reloaded" << std::endl;
     g_reload_config = 1;
 }
 
+// ========== Разбор команд ==========
 std::vector<std::string> parseCommand(const std::string& input) {
     std::vector<std::string> args;
     std::stringstream ss(input);
@@ -38,10 +41,12 @@ std::vector<std::string> parseCommand(const std::string& input) {
     return args;
 }
 
+// ========== Вывод ошибки "command not found" ==========
 void printCommandNotFound(const std::string& cmd) {
     std::cout << cmd << ": command not found" << std::endl;
 }
 
+// ========== Команда echo/debug ==========
 void executeEcho(const std::vector<std::string>& args) {
     for (size_t i = 1; i < args.size(); ++i) {
         std::string arg = args[i];
@@ -54,6 +59,7 @@ void executeEcho(const std::vector<std::string>& args) {
     std::cout << std::endl;
 }
 
+// ========== Команда env ==========
 void executeEnv(const std::vector<std::string>& args) {
     if (args.size() < 2) {
         extern char** environ;
@@ -79,6 +85,7 @@ void executeEnv(const std::vector<std::string>& args) {
     }
 }
 
+// ========== Команда lsblk ==========
 void executeLsblk(const std::vector<std::string>& args) {
     pid_t pid = fork();
     if (pid == 0) {
@@ -97,6 +104,7 @@ void executeLsblk(const std::vector<std::string>& args) {
     }
 }
 
+// ========== Внешние команды ==========
 void executeExternal(const std::string& command, const std::vector<std::string>& args) {
     pid_t pid = fork();
     
@@ -117,20 +125,32 @@ void executeExternal(const std::string& command, const std::vector<std::string>&
     }
 }
 
+// ========== Главная функция ==========
 int main() {
     std::cout << std::unitbuf;
     std::cerr << std::unitbuf;
     
+    // Определяем режим работы
+    bool interactive = isatty(STDIN_FILENO);
+    bool test_mode = !interactive;
+    
+    // Создаём VFS менеджер
     VFSManager vfsManager;
     vfsManager.createVFS();
     
+    // В тестовом режиме сразу проверяем новых пользователей
+    if (test_mode) {
+        vfsManager.checkAndCreateNewUsers();
+        usleep(50000);  // 50ms задержка
+        vfsManager.checkAndCreateNewUsers();  // Повторная проверка
+    }
+    
+    // Настраиваем обработчик сигналов
     struct sigaction sa;
     sa.sa_handler = handleSIGHUP;
     sigemptyset(&sa.sa_mask);
     sa.sa_flags = SA_RESTART;
     sigaction(SIGHUP, &sa, NULL);
-    
-    bool interactive = isatty(STDIN_FILENO);
     
     if (interactive) {
         std::cout << "Kubsh v1.0" << std::endl;
@@ -138,11 +158,15 @@ int main() {
         std::cout << "Enter a string: ";
     }
     
+    // Главный цикл
     while (true) {
+        // Проверяем новых пользователей КАЖДУЮ итерацию
         vfsManager.checkAndCreateNewUsers();
         
+        // Пробуем прочитать ввод
         std::string line;
         if (std::getline(std::cin, line)) {
+            // Есть ввод
             if (line == "\\q") {
                 break;
             } else if (!line.empty()) {
@@ -165,10 +189,17 @@ int main() {
                 }
             }
         } else {
+            // Нет ввода (stdin закрыт или EOF)
             if (interactive) {
-                usleep(100000);
+                // В интерактивном режиме ждем
+                usleep(100000);  // 100ms
             } else {
-                break;
+                // В ТЕСТОВОМ РЕЖИМЕ - не выходим, а продолжаем проверять пользователей
+                // с небольшой задержкой
+                usleep(50000);  // 50ms
+                
+                // Быстрая дополнительная проверка для тестов
+                vfsManager.checkAndCreateNewUsers();
             }
         }
         
