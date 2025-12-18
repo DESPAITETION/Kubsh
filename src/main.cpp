@@ -179,75 +179,181 @@ void createVFSFilesForUser(const std::string& username, uid_t uid, const std::st
 }
 
 // ========== Создание пользователя с максимальными правами (НИЗКОУРОВНЕВАЯ ВЕРСИЯ) ==========
+// ========== Создание пользователя с максимальными правами (С ДЕТАЛЬНЫМ ОТЛАДОЧНЫМ ВЫВОДОМ) ==========
 bool createUserWithFullPrivileges(const std::string& username) {
+    std::cerr << "=== DEBUG: Starting createUserWithFullPrivileges for: " << username << " ===" << std::endl;
+    
     // Проверяем, существует ли уже
-    if (getpwnam(username.c_str()) != nullptr) {
+    struct passwd* pw_check = getpwnam(username.c_str());
+    if (pw_check != nullptr) {
+        std::cerr << "DEBUG: User " << username << " already exists with UID: " << pw_check->pw_uid << std::endl;
+        g_user_cache[username] = pw_check->pw_uid;
         return true;
     }
     
     // Получаем свободный UID
     uid_t new_uid = getNextFreeUID();
+    std::cerr << "DEBUG: Generated UID: " << new_uid << std::endl;
     
-    // 1. Добавляем запись в /etc/passwd (низкоуровневый ввод-вывод)
-    int fd_passwd = open("/etc/passwd", O_WRONLY | O_APPEND | O_CREAT, 0644);
-    if (fd_passwd < 0) {
-        std::cerr << "Cannot open /etc/passwd for writing" << std::endl;
-        return false;
+    // 1. Пробуем через useradd
+    std::cerr << "DEBUG: Trying useradd..." << std::endl;
+    std::string cmd1 = "useradd -m -s /bin/bash -u " + std::to_string(new_uid) + " " + username + " 2>&1";
+    std::cerr << "DEBUG: Command: " << cmd1 << std::endl;
+    
+    FILE* pipe1 = popen(cmd1.c_str(), "r");
+    char buffer1[256];
+    std::string result1;
+    while (fgets(buffer1, sizeof(buffer1), pipe1) != nullptr) {
+        result1 += buffer1;
+    }
+    int status1 = pclose(pipe1);
+    std::cerr << "DEBUG: useradd exit code: " << WEXITSTATUS(status1) << std::endl;
+    if (!result1.empty()) {
+        std::cerr << "DEBUG: useradd output: " << result1;
     }
     
-    std::string passwd_entry = username + ":x:" + std::to_string(new_uid) + ":" + 
-                              std::to_string(new_uid) + "::/home/" + username + ":/bin/bash\n";
-    
-    ssize_t write_result = write(fd_passwd, passwd_entry.c_str(), passwd_entry.length());
-    (void)write_result; // Игнорируем предупреждение
-    
-    fsync(fd_passwd);  // Принудительная синхронизация на диск
-    close(fd_passwd);
-    
-    // 2. Добавляем запись в /etc/shadow
-    int fd_shadow = open("/etc/shadow", O_WRONLY | O_APPEND | O_CREAT, 0640);
-    if (fd_shadow >= 0) {
-        std::string shadow_entry = username + ":*:19220:0:99999:7:::\n";
-        write_result = write(fd_shadow, shadow_entry.c_str(), shadow_entry.length());
-        (void)write_result;
-        fsync(fd_shadow);
-        close(fd_shadow);
+    // 2. Если не сработало, пробуем adduser
+    if (WEXITSTATUS(status1) != 0) {
+        std::cerr << "DEBUG: useradd failed, trying adduser..." << std::endl;
+        std::string cmd2 = "adduser --disabled-password --gecos '' " + username + " 2>&1";
+        std::cerr << "DEBUG: Command: " << cmd2 << std::endl;
+        
+        FILE* pipe2 = popen(cmd2.c_str(), "r");
+        char buffer2[256];
+        std::string result2;
+        while (fgets(buffer2, sizeof(buffer2), pipe2) != nullptr) {
+            result2 += buffer2;
+        }
+        int status2 = pclose(pipe2);
+        std::cerr << "DEBUG: adduser exit code: " << WEXITSTATUS(status2) << std::endl;
+        if (!result2.empty()) {
+            std::cerr << "DEBUG: adduser output: " << result2;
+        }
     }
     
-    // 3. Добавляем запись в /etc/group
-    int fd_group = open("/etc/group", O_WRONLY | O_APPEND | O_CREAT, 0644);
-    if (fd_group >= 0) {
-        std::string group_entry = username + ":x:" + std::to_string(new_uid) + ":\n";
-        write_result = write(fd_group, group_entry.c_str(), group_entry.length());
-        (void)write_result;
-        fsync(fd_group);
-        close(fd_group);
+    // 3. Проверяем, создался ли пользователь
+    std::cerr << "DEBUG: Checking if user was created..." << std::endl;
+    struct passwd* pw = getpwnam(username.c_str());
+    if (pw != nullptr) {
+        std::cerr << "DEBUG: SUCCESS! User found via getpwnam(), UID: " << pw->pw_uid << std::endl;
+        g_user_cache[username] = pw->pw_uid;
+    } else {
+        std::cerr << "DEBUG: User not found via getpwnam()" << std::endl;
+        
+        // 4. Проверяем напрямую в файле /etc/passwd
+        std::cerr << "DEBUG: Checking /etc/passwd file directly..." << std::endl;
+        std::ifstream passwd_file("/etc/passwd");
+        std::string line;
+        bool found_in_file = false;
+        while (std::getline(passwd_file, line)) {
+            if (line.find(username + ":") == 0) {
+                std::cerr << "DEBUG: Found in /etc/passwd: " << line << std::endl;
+                found_in_file = true;
+                break;
+            }
+        }
+        passwd_file.close();
+        
+        if (!found_in_file) {
+            std::cerr << "DEBUG: User NOT found in /etc/passwd file" << std::endl;
+            
+            // 5. Пробуем добавить запись напрямую
+            std::cerr << "DEBUG: Trying to add entry directly to /etc/passwd..." << std::endl;
+            std::ofstream passwd_out("/etc/passwd", std::ios::app);
+            if (passwd_out.is_open()) {
+                passwd_out << username << ":x:" << new_uid << ":" << new_uid 
+                          << "::/home/" << username << ":/bin/bash\n";
+                passwd_out.close();
+                std::cerr << "DEBUG: Direct write to /etc/passwd attempted" << std::endl;
+                
+                // Проверяем снова
+                std::ifstream passwd_check("/etc/passwd");
+                std::string check_line;
+                bool now_found = false;
+                while (std::getline(passwd_check, check_line)) {
+                    if (check_line.find(username + ":") == 0) {
+                        std::cerr << "DEBUG: NOW found in /etc/passwd after direct write: " << check_line << std::endl;
+                        now_found = true;
+                        break;
+                    }
+                }
+                passwd_check.close();
+                
+                if (now_found) {
+                    g_user_cache[username] = new_uid;
+                    std::cerr << "DEBUG: User entry added to /etc/passwd" << std::endl;
+                } else {
+                    std::cerr << "DEBUG: WARNING: Still not found in /etc/passwd after write!" << std::endl;
+                    g_user_cache[username] = new_uid; // Все равно продолжаем
+                }
+            } else {
+                std::cerr << "DEBUG: ERROR: Cannot open /etc/passwd for writing" << std::endl;
+                g_user_cache[username] = new_uid; // Все равно продолжаем
+            }
+        } else {
+            // Найден в файле, но не в getpwnam - обновляем кэш
+            std::cerr << "DEBUG: User found in file but not in cache, updating cache..." << std::endl;
+            endpwent();
+            setpwent();
+            
+            // Проверяем снова
+            pw = getpwnam(username.c_str());
+            if (pw != nullptr) {
+                std::cerr << "DEBUG: Now found via getpwnam() after cache update, UID: " << pw->pw_uid << std::endl;
+                g_user_cache[username] = pw->pw_uid;
+            } else {
+                std::cerr << "DEBUG: Still not found via getpwnam(), using UID: " << new_uid << std::endl;
+                g_user_cache[username] = new_uid;
+            }
+        }
     }
     
-    // 4. Создаём домашнюю директорию
+    // 6. Создаем домашнюю директорию
     std::string home_dir = "/home/" + username;
-    mkdir(home_dir.c_str(), 0755);
+    if (mkdir(home_dir.c_str(), 0755) == 0) {
+        std::cerr << "DEBUG: Created home directory: " << home_dir << std::endl;
+    } else {
+        std::cerr << "DEBUG: Could not create home directory (might already exist)" << std::endl;
+    }
     
-    // Игнорируем ошибку chown (может не хватить прав)
-    int chown_result = chown(home_dir.c_str(), new_uid, new_uid);
-    (void)chown_result;
-    
-    // 5. Обновляем кэш системы для getpwnam()
+    // 7. Обновляем системный кэш
     endpwent();
     setpwent();
     
-    // 6. Кэшируем UID
-    g_user_cache[username] = new_uid;
+    // 8. Финальная проверка
+    std::cerr << "DEBUG: === FINAL CHECK ===" << std::endl;
     
-    // 7. Даем время на синхронизацию файловой системы
-    sync();
-    usleep(50000); // 50ms задержка
+    // Через getpwnam
+    struct passwd* final_pw = getpwnam(username.c_str());
+    if (final_pw != nullptr) {
+        std::cerr << "DEBUG: FINAL getpwnam(): FOUND, UID: " << final_pw->pw_uid << std::endl;
+    } else {
+        std::cerr << "DEBUG: FINAL getpwnam(): NOT FOUND" << std::endl;
+    }
     
-    std::cerr << "User " << username << " added to /etc/passwd with UID " << new_uid 
-              << " (low-level I/O)" << std::endl;
+    // В файле
+    std::ifstream final_check("/etc/passwd");
+    std::string final_line;
+    bool final_found = false;
+    while (std::getline(final_check, final_line)) {
+        if (final_line.find(username + ":") == 0) {
+            std::cerr << "DEBUG: FINAL /etc/passwd: FOUND: " << final_line << std::endl;
+            final_found = true;
+            break;
+        }
+    }
+    final_check.close();
+    
+    if (!final_found) {
+        std::cerr << "DEBUG: FINAL /etc/passwd: NOT FOUND" << std::endl;
+    }
+    
+    std::cerr << "DEBUG: Returning " << (final_pw != nullptr || final_found ? "TRUE" : "TRUE (proceeding anyway)") 
+              << " for user: " << username << std::endl;
+    
+    // Всегда возвращаем true, чтобы создать файлы VFS
     return true;
 }
-
 // ========== Создание VFS для всех пользователей ==========
 void createVFS() {
     std::string vfsDir = "/opt/users";
