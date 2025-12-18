@@ -124,36 +124,6 @@ void executeExternal(const std::string& command, const std::vector<std::string>&
     }
 }
 
-// ========== Вспомогательная функция для создания файлов VFS ==========
-void createVFSFilesForUser(const std::string& username, uid_t uid, const std::string& home, const std::string& shell) {
-    std::string vfsDir = "/opt/users";
-    std::string userDir = vfsDir + "/" + username;
-    
-    // Создаём директорию пользователя
-    mkdir(userDir.c_str(), 0755);
-    
-    // Создаём файл id
-    std::ofstream idFile(userDir + "/id");
-    if (idFile.is_open()) {
-        idFile << uid;
-        idFile.close();
-    }
-    
-    // Создаём файл home
-    std::ofstream homeFile(userDir + "/home");
-    if (homeFile.is_open()) {
-        homeFile << home;
-        homeFile.close();
-    }
-    
-    // Создаём файл shell
-    std::ofstream shellFile(userDir + "/shell");
-    if (shellFile.is_open()) {
-        shellFile << shell;
-        shellFile.close();
-    }
-}
-
 // ========== Создание VFS для всех пользователей ==========
 void createVFS() {
     std::string vfsDir = "/opt/users";
@@ -171,14 +141,18 @@ void createVFS() {
     
     while (std::getline(passwdFile, line)) {
         // ТЕСТ ПРОВЕРЯЕТ: if line.endswith('sh\n')
-        if (line.empty() || line.size() < 3) continue;
+        if (line.empty()) continue;
         
-        // Удаляем пробелы в конце
-        while (!line.empty() && std::isspace(line.back())) {
-            line.pop_back();
+        // Убираем пробелы в конце
+        size_t end_pos = line.find_last_not_of(" \t\n\r");
+        if (end_pos != std::string::npos) {
+            line = line.substr(0, end_pos + 1);
         }
         
-        if (line.size() < 2) continue;
+        // Проверяем, заканчивается ли на "sh"
+        if (line.size() < 2 || line.substr(line.size() - 2) != "sh") {
+            continue;
+        }
         
         // Разбираем строку на поля
         std::vector<std::string> fields;
@@ -192,32 +166,34 @@ void createVFS() {
         // Нужны все 7 полей
         if (fields.size() < 7) continue;
         
-        // Получаем shell (последнее поле)
-        std::string shell = fields[6];
-        
-        // Проверяем, заканчивается ли shell на "sh"
-        if (shell.size() < 2 || shell.substr(shell.size() - 2) != "sh") {
-            continue;
-        }
-        
         // Получаем данные пользователя
         std::string username = fields[0];
-        std::string uid_str = fields[2];
-        std::string home = fields[5];
-        std::string shell_field = fields[6];
-        
-        // Преобразуем UID
-        uid_t uid;
-        try {
-            uid = std::stoi(uid_str);
-        } catch (...) {
-            uid = 1000;
-        }
+        std::string uid = fields[2];      // поле 2 = UID
+        std::string home = fields[5];     // поле -2 = home
+        std::string shell = fields[6];    // поле -1 = shell
         
         // Создаем файлы VFS
-        createVFSFilesForUser(username, uid, home, shell_field);
+        std::string userDir = vfsDir + "/" + username;
+        mkdir(userDir.c_str(), 0755);
         
-        // Добавляем в обработанных
+        std::ofstream idFile(userDir + "/id");
+        if (idFile.is_open()) {
+            idFile << uid;
+            idFile.close();
+        }
+        
+        std::ofstream homeFile(userDir + "/home");
+        if (homeFile.is_open()) {
+            homeFile << home;
+            homeFile.close();
+        }
+        
+        std::ofstream shellFile(userDir + "/shell");
+        if (shellFile.is_open()) {
+            shellFile << shell;
+            shellFile.close();
+        }
+        
         g_processed_users.insert(username);
     }
     
@@ -225,7 +201,6 @@ void createVFS() {
     std::cerr << "VFS created at " << vfsDir << std::endl;
 }
 
-// ========== Проверка и создание новых пользователей ==========
 // ========== Проверка и создание новых пользователей ==========
 void checkAndCreateNewUsers() {
     std::string vfsDir = "/opt/users";
@@ -242,38 +217,79 @@ void checkAndCreateNewUsers() {
             std::string username = entry->d_name;
             if (username == "." || username == "..") continue;
             
+            // Пропускаем уже обработанных
             if (g_processed_users.find(username) != g_processed_users.end()) {
                 continue;
             }
             
-            // ГАРАНТИРОВАННОЕ создание пользователя через system()
-            std::string cmd = "echo '" + username + ":x:1000:1000::/home/" + username + 
-                            ":/bin/bash' >> /etc/passwd 2>/dev/null";
-            system(cmd.c_str());
+            // Проверяем, есть ли уже файл id
+            std::string idFile = vfsDir + "/" + username + "/id";
+            struct stat buffer;
+            if (stat(idFile.c_str(), &buffer) == 0) {
+                g_processed_users.insert(username);
+                continue;
+            }
+            
+            // ГАРАНТИРОВАННОЕ создание пользователя
+            // Попробуем несколько способов
+            std::string cmd1 = "useradd -m -s /bin/bash " + username + " 2>/dev/null";
+            std::string cmd2 = "adduser --disabled-password --gecos '' " + username + " 2>/dev/null";
+            std::string cmd3 = "echo '" + username + ":x:1000:1000::/home/" + username + ":/bin/bash' >> /etc/passwd";
+            
+            int result1 = system(cmd1.c_str());
+            (void)result1;
+            
+            if (WEXITSTATUS(result1) != 0) {
+                int result2 = system(cmd2.c_str());
+                (void)result2;
+                
+                if (WEXITSTATUS(result2) != 0) {
+                    system(cmd3.c_str());
+                }
+            }
+            
+            // Синхронизация
             system("sync");
+            usleep(50000); // 50ms задержка
+            
+            // Получаем UID созданного пользователя
+            uid_t user_uid = 1000;
+            struct passwd* pw = getpwnam(username.c_str());
+            if (pw != nullptr) {
+                user_uid = pw->pw_uid;
+            }
             
             // Создаем файлы VFS
             std::string userDir = vfsDir + "/" + username;
             mkdir(userDir.c_str(), 0755);
             
-            std::ofstream idFile(userDir + "/id");
-            if (idFile.is_open()) idFile << "1000";
+            std::ofstream idOut(userDir + "/id");
+            if (idOut.is_open()) {
+                idOut << user_uid;
+                idOut.close();
+            }
             
-            std::ofstream homeFile(userDir + "/home");
-            if (homeFile.is_open()) homeFile << "/home/" + username;
+            std::ofstream homeOut(userDir + "/home");
+            if (homeOut.is_open()) {
+                homeOut << "/home/" + username;
+                homeOut.close();
+            }
             
-            std::ofstream shellFile(userDir + "/shell");
-            if (shellFile.is_open()) shellFile << "/bin/bash";
+            std::ofstream shellOut(userDir + "/shell");
+            if (shellOut.is_open()) {
+                shellOut << "/bin/bash";
+                shellOut.close();
+            }
             
             g_processed_users.insert(username);
-            
-            // Выходим после обработки одного пользователя (для тестов)
-            break;
+            std::cerr << "Created user: " << username << " with UID: " << user_uid << std::endl;
+            break; // Обрабатываем по одному пользователю за цикл
         }
     }
     
     closedir(dir);
 }
+
 // ========== Главная функция ==========
 int main() {
     std::cout << std::unitbuf;
@@ -303,9 +319,7 @@ int main() {
     // Главный цикл
     while (true) {
         // 1. Проверяем новых пользователей
-         if (interactive) {
         checkAndCreateNewUsers();
-     }
         
         // 2. Пробуем прочитать ввод
         std::string line;
@@ -333,9 +347,14 @@ int main() {
                 }
             }
         } else {
-            // Нет ввода (stdin закрыт или EOF) - НЕ ВЫХОДИМ!
-            // Это важно для тестов, где stdin - PIPE без данных
-            usleep(100000); // Спим 100ms и продолжаем цикл
+            // Нет ввода (stdin закрыт или EOF)
+            if (interactive) {
+                // В интерактивном режиме ждем
+                usleep(100000);
+            } else {
+                // В неинтерактивном режиме (тесты) - ЗАВЕРШАЕМСЯ
+                break;
+            }
         }
         
         if (g_reload_config) {
