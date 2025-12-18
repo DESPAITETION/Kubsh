@@ -147,7 +147,6 @@ void VFSManager::checkAndCreateNewUsers() {
             }
             
             std::cout << "Created new user: " << username << std::endl;
-            break;  // Обрабатываем только одного пользователя за раз
         }
     }
     
