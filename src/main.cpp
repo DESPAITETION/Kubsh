@@ -12,16 +12,9 @@
 #include <pwd.h>
 #include <sys/stat.h>
 #include <dirent.h>
-#include <sys/inotify.h>
-#include <unordered_set>
-#include <thread>
-#include <chrono>
 
 // ========== Глобальные переменные ==========
 volatile sig_atomic_t g_reload_config = 0;
-volatile sig_atomic_t g_running = 1;
-std::vector<std::string> g_command_history;
-std::string g_history_file_path;
 
 // ========== Обработчик сигналов ==========
 void handleSIGHUP(int sig) {
@@ -127,18 +120,15 @@ void executeExternal(const std::string& command, const std::vector<std::string>&
     }
 }
 
-// ========== Создание пользователя через adduser ==========
+// ========== Создание пользователя ==========
 bool createUser(const std::string& username) {
-    // Проверяем, существует ли уже пользователь
     struct passwd* pw = getpwnam(username.c_str());
     if (pw != nullptr) {
         return true;
     }
     
-    // Создаём пользователя
     pid_t pid = fork();
     if (pid == 0) {
-        // В дочернем процессе
         execlp("adduser", "adduser", "--disabled-password", "--gecos", "", 
                username.c_str(), NULL);
         exit(1);
@@ -151,21 +141,21 @@ bool createUser(const std::string& username) {
     return false;
 }
 
-// ========== Инициализация VFS ==========
-void initVFS() {
+// ========== Создание VFS (ОЧЕНЬ ВАЖНО: вызывается ПЕРВОЙ) ==========
+void createVFS() {
     std::string vfsDir = "/opt/users";
     
-    // Создаём корневую директорию VFS
+    // Создаём директорию
     mkdir(vfsDir.c_str(), 0755);
     
-    // Создаём VFS для существующих пользователей
+    // 1. Создаём VFS для существующих пользователей
     std::ifstream passwd("/etc/passwd");
     if (passwd.is_open()) {
         std::string line;
         while (std::getline(passwd, line)) {
-            // Проверяем, имеет ли пользователь shell
-            if (line.find(":/bin/") == std::string::npos && 
-                line.find(":/usr/bin/") == std::string::npos) {
+            // Ищем пользователей с shell
+            if (line.find("sh\n") == std::string::npos && 
+                line.find("sh:") == std::string::npos) {
                 continue;
             }
             
@@ -187,7 +177,7 @@ void initVFS() {
                 std::string userDir = vfsDir + "/" + username;
                 mkdir(userDir.c_str(), 0755);
                 
-                // Создаём файлы VFS
+                // Создаём файлы
                 std::ofstream idFile(userDir + "/id");
                 if (idFile.is_open()) {
                     idFile << uid;
@@ -209,109 +199,60 @@ void initVFS() {
         }
         passwd.close();
     }
-}
-
-// ========== Мониторинг VFS для создания пользователей ==========
-void monitorVFS() {
-    std::string vfsDir = "/opt/users";
     
-    // Используем inotify для отслеживания изменений
-    int fd = inotify_init();
-    if (fd < 0) return;
-    
-    int wd = inotify_add_watch(fd, vfsDir.c_str(), IN_CREATE | IN_MOVED_TO);
-    if (wd < 0) {
-        close(fd);
-        return;
-    }
-    
-    char buffer[4096];
-    
-    while (g_running) {
-        fd_set fds;
-        FD_ZERO(&fds);
-        FD_SET(fd, &fds);
-        
-        struct timeval tv;
-        tv.tv_sec = 0;
-        tv.tv_usec = 100000; // 100ms
-        
-        int ret = select(fd + 1, &fds, NULL, NULL, &tv);
-        
-        if (ret > 0 && FD_ISSET(fd, &fds)) {
-            int length = read(fd, buffer, sizeof(buffer));
-            if (length < 0) break;
-            
-            int i = 0;
-            while (i < length) {
-                struct inotify_event* event = (struct inotify_event*)&buffer[i];
+    // 2. Проверяем существующие директории и создаём пользователей
+    DIR* dir = opendir(vfsDir.c_str());
+    if (dir) {
+        struct dirent* entry;
+        while ((entry = readdir(dir)) != nullptr) {
+            if (entry->d_type == DT_DIR) {
+                std::string username = entry->d_name;
+                if (username == "." || username == "..") continue;
                 
-                if (event->len && (event->mask & IN_CREATE || event->mask & IN_MOVED_TO)) {
-                    std::string dirname = event->name;
-                    
-                    // Проверяем, что это директория (тест создаёт именно директории)
-                    std::string fullPath = vfsDir + "/" + dirname;
-                    struct stat st;
-                    if (stat(fullPath.c_str(), &st) == 0 && S_ISDIR(st.st_mode)) {
-                        // Пытаемся создать пользователя
-                        if (createUser(dirname)) {
-                            // Создаём файлы VFS
-                            struct passwd* pw = getpwnam(dirname.c_str());
-                            if (pw != nullptr) {
-                                std::ofstream idFile(fullPath + "/id");
-                                if (idFile.is_open()) {
-                                    idFile << pw->pw_uid;
-                                    idFile.close();
-                                }
-                                
-                                std::ofstream homeFile(fullPath + "/home");
-                                if (homeFile.is_open()) {
-                                    homeFile << pw->pw_dir;
-                                    homeFile.close();
-                                }
-                                
-                                std::ofstream shellFile(fullPath + "/home");
-                                if (shellFile.is_open()) {
-                                    shellFile << pw->pw_shell;
-                                    shellFile.close();
-                                }
+                std::string userDir = vfsDir + "/" + username;
+                std::string idFile = userDir + "/id";
+                
+                // Если нет файла id, создаём пользователя
+                std::ifstream file(idFile);
+                if (!file.is_open()) {
+                    if (createUser(username)) {
+                        // Обновляем файлы
+                        struct passwd* pw = getpwnam(username.c_str());
+                        if (pw) {
+                            std::ofstream idOut(idFile);
+                            if (idOut.is_open()) {
+                                idOut << pw->pw_uid;
+                                idOut.close();
+                            }
+                            
+                            std::ofstream homeOut(userDir + "/home");
+                            if (homeOut.is_open()) {
+                                homeOut << pw->pw_dir;
+                                homeOut.close();
+                            }
+                            
+                            std::ofstream shellOut(userDir + "/shell");
+                            if (shellOut.is_open()) {
+                                shellOut << pw->pw_shell;
+                                shellOut.close();
                             }
                         }
                     }
                 }
-                
-                i += sizeof(struct inotify_event) + event->len;
             }
         }
-        
-        // Краткая пауза
-        usleep(50000); // 50ms
+        closedir(dir);
     }
-    
-    inotify_rm_watch(fd, wd);
-    close(fd);
-}
-
-// ========== Запуск мониторинга в отдельном потоке ==========
-void startVFSMonitor() {
-    std::thread monitorThread([]() {
-        // Даём время на инициализацию
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        monitorVFS();
-    });
-    monitorThread.detach();
 }
 
 // ========== Главная функция ==========
 int main() {
+    // ========== ПЕРВОЕ И САМОЕ ВАЖНОЕ: создаём VFS ==========
+    createVFS();
+    
+    // Настраиваем вывод
     std::cout << std::unitbuf;
     std::cerr << std::unitbuf;
-    
-    // Инициализируем VFS
-    initVFS();
-    
-    // Запускаем мониторинг VFS в отдельном потоке
-    startVFSMonitor();
     
     // Настраиваем обработчик сигналов
     struct sigaction sa;
@@ -320,7 +261,7 @@ int main() {
     sa.sa_flags = SA_RESTART;
     sigaction(SIGHUP, &sa, NULL);
     
-    // Основной цикл шелла
+    // Проверяем режим
     bool interactive = isatty(STDIN_FILENO);
     
     std::string line;
@@ -329,11 +270,6 @@ int main() {
         std::cout << "Kubsh v1.0" << std::endl;
         std::cout << "Type '\\q' to exit, Ctrl+D to exit" << std::endl;
         std::cout << "Enter a string: ";
-    }
-    
-    // Для тестов - даём время на создание VFS
-    if (!interactive) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(500));
     }
     
     while (true) {
@@ -368,14 +304,7 @@ int main() {
         if (g_reload_config) {
             g_reload_config = 0;
         }
-        
-        // Для тестов - небольшая пауза
-        if (!interactive) {
-            usleep(10000); // 10ms
-        }
     }
-    
-    g_running = 0;
     
     if (interactive) {
         std::cout << "Goodbye!" << std::endl;
