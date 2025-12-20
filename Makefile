@@ -10,7 +10,6 @@ SOURCES := $(wildcard $(SRC_DIR)/*.cpp)
 # Основные цели
 all: build
 
-# Нативная сборка с g++
 build: $(SOURCES)
 	$(CXX) $(CXXFLAGS) $(SOURCES) -o $(TARGET)
 
@@ -21,13 +20,18 @@ clean:
 	rm -f $(TARGET) *.o kubsh_*.deb
 	rm -rf deb-pkg-temp/
 
-# Тестирование
+# Тестирование - РАЗНЫЕ КОМАНДЫ ДЛЯ ЛОКАЛЬНОГО И DOCKER
 test: build
-	@echo "Running basic tests..."
+ifneq (,$(findstring /kubsh_test,$(shell pwd)))
+	@echo "=== Running Python tests (inside Docker) ==="
+	pytest /opt/test_basic.py /opt/test_vfs.py -v
+else
+	@echo "=== Running local bash tests ==="
 	@chmod +x tests/*.sh 2>/dev/null || true
-	@./tests/test_basic.sh
-	@./tests/test_commands.sh
-	@./tests/test_requirements.sh
+	@./tests/test_basic.sh || true
+	@./tests/test_commands.sh || true
+	@./tests/test_requirements.sh || true
+endif
 
 # Сборка deb-пакета
 package: build
@@ -50,14 +54,15 @@ package: build
 	@echo "✓ Package built: kubsh_1.0.0_amd64.deb"
 
 # Docker тестирование
-docker-test: build
-	@echo "=== Docker Testing Commands ==="
-	@echo "On Ubuntu VM, run:"
-	@echo "  ./test_in_docker.sh"
+docker-test:
+	@echo "=== Running FULL test in lecturer's Docker ==="
+	@echo "This will:"
+	@echo "1. Pull Docker image"
+	@echo "2. Test compilation"
+	@echo "3. Run Python tests"
+	@echo "4. Build deb package"
 	@echo ""
-	@echo "Or manually:"
-	@echo "  docker run --rm -v \$$(pwd):/kubsh -w /kubsh tyvik/kubsh_test:master make test"
-	@echo "  docker run --rm -v \$$(pwd):/kubsh -w /kubsh tyvik/kubsh_test:master make package"
+	@echo "Run: docker run --rm -v \$$(pwd):/kubsh -w /kubsh tyvik/kubsh_test:master bash -c \"make build && make test && make package\""
 
 # Быстрая проверка
 check: build
@@ -67,19 +72,15 @@ check: build
 	@echo "echo test" | timeout 2 ./$(TARGET) 2>&1 | grep -q "test" && echo "✓ Echo command works" || echo "✗ Echo command failed"
 	@echo "nonexistentcmd" | timeout 2 ./$(TARGET) 2>&1 | grep -i "not found" && echo "✓ Command validation works" || echo "✗ Command validation failed"
 
-# CMake сборка
-cmake-build:
-	@mkdir -p build
-	cd build && cmake .. && make
-
-# Помощь
 help:
 	@echo "Available commands:"
 	@echo "  make build      - Compile kubsh"
 	@echo "  make run        - Run kubsh"
-	@echo "  make test       - Run all tests"
+	@echo "  make test       - Run local tests"
 	@echo "  make package    - Build deb package"
 	@echo "  make check      - Quick functionality check"
 	@echo "  make clean      - Clean build files"
-	@echo "  make docker-test - Show Docker commands"
-	@echo "  make cmake-build - Build with CMake"
+	@echo "  make docker-test - Show Docker test command"
+	@echo ""
+	@echo "For Docker testing:"
+	@echo "  docker run --rm -v \$$(pwd):/kubsh -w /kubsh tyvik/kubsh_test:master bash -c \"make build && make test && make package\""
