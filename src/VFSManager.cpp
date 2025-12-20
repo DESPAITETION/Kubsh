@@ -134,8 +134,8 @@ void VFSManager::checkAndCreateNewUsers() {
                     shellOut.close();
                 }
                 
-                // ЗАДЕРЖКА для синхронизации в тестах
-                usleep(50000);  // 50ms задержка
+                // МИНИМАЛЬНАЯ задержка для синхронизации
+                usleep(10000);  // 10ms задержка
             }
             break;
         }
