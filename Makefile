@@ -20,11 +20,11 @@ clean:
 	rm -f $(TARGET) *.o kubsh_*.deb
 	rm -rf deb-pkg-temp/
 
-# Тестирование - РАЗНЫЕ КОМАНДЫ ДЛЯ ЛОКАЛЬНОГО И DOCKER
+# Тестирование - автоматическое определение где мы
 test: build
-ifneq (,$(findstring /kubsh_test,$(shell pwd)))
-	@echo "=== Running Python tests (inside Docker) ==="
-	pytest /opt/test_basic.py /opt/test_vfs.py -v
+ifneq (,$(wildcard /opt/test_basic.py))
+	@echo "=== Running Python tests (inside Docker image) ==="
+	cd /opt && pytest test_basic.py test_vfs.py -v
 else
 	@echo "=== Running local bash tests ==="
 	@chmod +x tests/*.sh 2>/dev/null || true
@@ -55,14 +55,13 @@ package: build
 
 # Docker тестирование
 docker-test:
-	@echo "=== Running FULL test in lecturer's Docker ==="
-	@echo "This will:"
-	@echo "1. Pull Docker image"
-	@echo "2. Test compilation"
-	@echo "3. Run Python tests"
-	@echo "4. Build deb package"
+	@echo "=== Docker Testing Commands ==="
 	@echo ""
-	@echo "Run: docker run --rm -v \$$(pwd):/kubsh -w /kubsh tyvik/kubsh_test:master bash -c \"make build && make test && make package\""
+	@echo "Full test with dependencies installation:"
+	@echo "  docker run --rm -v \$$(pwd):/kubsh -w /kubsh tyvik/kubsh_test:master bash -c \"apt-get update && apt-get install -y g++ make python3-pip && pip3 install pytest && make build && make test && make package\""
+	@echo ""
+	@echo "Or use test_in_docker.sh:"
+	@echo "  ./test_in_docker.sh"
 
 # Быстрая проверка
 check: build
@@ -72,15 +71,13 @@ check: build
 	@echo "echo test" | timeout 2 ./$(TARGET) 2>&1 | grep -q "test" && echo "✓ Echo command works" || echo "✗ Echo command failed"
 	@echo "nonexistentcmd" | timeout 2 ./$(TARGET) 2>&1 | grep -i "not found" && echo "✓ Command validation works" || echo "✗ Command validation failed"
 
+# Помощь
 help:
 	@echo "Available commands:"
 	@echo "  make build      - Compile kubsh"
 	@echo "  make run        - Run kubsh"
-	@echo "  make test       - Run local tests"
+	@echo "  make test       - Run tests (local bash or Docker Python)"
 	@echo "  make package    - Build deb package"
 	@echo "  make check      - Quick functionality check"
 	@echo "  make clean      - Clean build files"
-	@echo "  make docker-test - Show Docker test command"
-	@echo ""
-	@echo "For Docker testing:"
-	@echo "  docker run --rm -v \$$(pwd):/kubsh -w /kubsh tyvik/kubsh_test:master bash -c \"make build && make test && make package\""
+	@echo "  make docker-test - Show Docker test commands"
