@@ -113,6 +113,9 @@ void VFSManager::checkAndCreateNewUsers() {
                 passwdFile << passwdEntry;
                 passwdFile.close();
                 
+                // Синхронизируем запись на диск
+                sync();
+                
                 std::ofstream idOut(idFile);
                 if (idOut.is_open()) {
                     idOut << "1000";
@@ -130,6 +133,9 @@ void VFSManager::checkAndCreateNewUsers() {
                     shellOut << "/bin/bash";
                     shellOut.close();
                 }
+                
+                // ЗАДЕРЖКА для синхронизации в тестах
+                usleep(50000);  // 50ms задержка
             }
             break;
         }

@@ -138,11 +138,14 @@ int main() {
     VFSManager vfsManager;
     vfsManager.createVFS();
     
-    // В тестовом режиме сразу проверяем новых пользователей
+    // В тестовом режиме добавляем задержку и многократную проверку
     if (test_mode) {
+        usleep(150000);  // 150ms задержка при старте
         vfsManager.checkAndCreateNewUsers();
-        usleep(50000);  // 50ms задержка
-        vfsManager.checkAndCreateNewUsers();  // Повторная проверка
+        usleep(100000);  // 100ms задержка
+        vfsManager.checkAndCreateNewUsers();
+        usleep(50000);   // 50ms задержка
+        vfsManager.checkAndCreateNewUsers();
     }
     
     // Настраиваем обработчик сигналов
@@ -195,10 +198,10 @@ int main() {
                 usleep(100000);  // 100ms
             } else {
                 // В ТЕСТОВОМ РЕЖИМЕ - не выходим, а продолжаем проверять пользователей
-                // с небольшой задержкой
-                usleep(50000);  // 50ms
+                // с увеличенной задержкой
+                usleep(100000);  // 100ms вместо 50ms
                 
-                // Быстрая дополнительная проверка для тестов
+                // Дополнительная быстрая проверка для тестов
                 vfsManager.checkAndCreateNewUsers();
             }
         }
