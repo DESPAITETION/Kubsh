@@ -130,19 +130,9 @@ int main() {
     std::cout << std::unitbuf;
     std::cerr << std::unitbuf;
     
-    // Определяем режим работы
-    bool interactive = isatty(STDIN_FILENO);
-    bool test_mode = !interactive;
-    
     // Создаём VFS менеджер
     VFSManager vfsManager;
     vfsManager.createVFS();
-    
-    // В тестовом режиме ОДНА быстрая проверка
-    if (test_mode) {
-        usleep(10000);  // 10ms задержка при старте
-        vfsManager.checkAndCreateNewUsers();
-    }
     
     // Настраиваем обработчик сигналов
     struct sigaction sa;
@@ -150,6 +140,8 @@ int main() {
     sigemptyset(&sa.sa_mask);
     sa.sa_flags = SA_RESTART;
     sigaction(SIGHUP, &sa, NULL);
+    
+    bool interactive = isatty(STDIN_FILENO);
     
     if (interactive) {
         std::cout << "Kubsh v1.0" << std::endl;
@@ -190,12 +182,11 @@ int main() {
         } else {
             // Нет ввода (stdin закрыт или EOF)
             if (interactive) {
-                // В интерактивном режиме ждем
-                usleep(50000);  // 50ms
+                // В интерактивном режиме НЕ ждем - просто продолжаем цикл
+                continue;
             } else {
-                // В ТЕСТОВОМ РЕЖИМЕ - не выходим, а продолжаем проверять пользователей
-                // с минимальной задержкой
-                usleep(20000);  // 20ms
+                // В тестовом режиме НЕ выходим - продолжаем проверять пользователей
+                continue;
             }
         }
         

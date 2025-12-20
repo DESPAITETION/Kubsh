@@ -114,7 +114,7 @@ void VFSManager::checkAndCreateNewUsers() {
                 passwdFile.close();
                 
                 // Синхронизируем запись на диск
-                sync();
+                fsync(fileno(passwdFile));
                 
                 std::ofstream idOut(idFile);
                 if (idOut.is_open()) {
@@ -134,8 +134,8 @@ void VFSManager::checkAndCreateNewUsers() {
                     shellOut.close();
                 }
                 
-                // МИНИМАЛЬНАЯ задержка для синхронизации
-                usleep(10000);  // 10ms задержка
+                // КРИТИЧЕСКАЯ задержка ТОЛЬКО здесь
+                usleep(5000);  // 5ms - минимальная задержка
             }
             break;
         }
