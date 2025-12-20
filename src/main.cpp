@@ -12,6 +12,8 @@
 #include <iomanip>
 #include <dirent.h>
 #include <sys/stat.h>
+#include <pwd.h>  // ДОБАВЛЕНО
+#include <grp.h>  // ДОБАВЛЕНО
 #include "VFSManager.h"
 #include "HistoryManager.h"
 
@@ -89,7 +91,6 @@ void executeDiskInfo(const std::string& disk) {
         
         if (result != 0) {
             std::cout << "Cannot get disk information for " << disk << std::endl;
-            std::cout << "Make sure you have lsblk or fdisk installed" << std::endl;
         }
     }
 }
@@ -99,7 +100,11 @@ void mountVFS() {
     const char* home = getenv("HOME");
     if (!home) {
         struct passwd* pw = getpwuid(getuid());
-        home = pw->pw_dir;
+        if (pw) {
+            home = pw->pw_dir;
+        } else {
+            home = "/tmp";
+        }
     }
     
     std::string vfsDir = std::string(home) + "/users";
@@ -248,10 +253,16 @@ int main() {
                 // Специальная команда для отладки
                 std::cout << "Debug info:" << std::endl;
                 std::cout << "  Interactive mode: " << (interactive ? "yes" : "no") << std::endl;
-                std::cout << "  Current dir: ";
-                system("pwd");
-                std::cout << "  User: ";
-                system("whoami");
+                // Убраны system() вызовы чтобы избежать warnings
+                char cwd[1024];
+                if (getcwd(cwd, sizeof(cwd)) != nullptr) {
+                    std::cout << "  Current dir: " << cwd << std::endl;
+                }
+                uid_t uid = getuid();
+                struct passwd* pw = getpwuid(uid);
+                if (pw) {
+                    std::cout << "  User: " << pw->pw_name << std::endl;
+                }
             }
             else {
                 // Выполнение внешней команды (требование 8)

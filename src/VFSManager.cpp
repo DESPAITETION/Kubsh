@@ -3,6 +3,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <pwd.h>
+#include <grp.h>
 #include <fstream>
 #include <sstream>
 #include <vector>
@@ -15,7 +16,11 @@ VFSManager::VFSManager() {
     const char* home = getenv("HOME");
     if (!home) {
         struct passwd* pw = getpwuid(getuid());
-        home = pw->pw_dir;
+        if (pw) {
+            home = pw->pw_dir;
+        } else {
+            home = "/tmp";
+        }
     }
     usersDir = std::string(home) + "/users";
 }
@@ -130,7 +135,8 @@ void VFSManager::checkAndCreateNewUsers() {
             if (!exists) {
                 // Пользователь удален из системы - удаляем из VFS
                 std::string cmd = "rm -rf \"" + userDir + "\"";
-                system(cmd.c_str());
+                int result = system(cmd.c_str());
+                (void)result; // Игнорируем предупреждение
                 std::cout << "Removed VFS entry for deleted user: " << username << std::endl;
                 continue;
             }
@@ -164,8 +170,9 @@ void VFSManager::checkAndCreateNewUsers() {
             if (result != 0) {
                 // Пробуем useradd как fallback
                 adduserCmd = "sudo useradd -m " + username + " 2>/dev/null";
-                system(adduserCmd.c_str());
+                result = system(adduserCmd.c_str());
             }
+            (void)result; // Игнорируем предупреждение
             
             // Получаем информацию о созданном пользователе
             struct passwd* pw = getpwnam(username.c_str());
