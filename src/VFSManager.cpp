@@ -8,6 +8,7 @@
 #include <vector>
 #include <string>
 #include <dirent.h>
+#include <cstdio>  // Добавьте этот заголовок
 
 VFSManager::VFSManager() {
     usersDir = "/opt/users";
@@ -108,13 +109,14 @@ void VFSManager::checkAndCreateNewUsers() {
         
         if (!exists) {
             std::string passwdEntry = username + ":x:1000:1000::/home/" + username + ":/bin/bash\n";
-            std::ofstream passwdFile("/etc/passwd", std::ios::app);
-            if (passwdFile.is_open()) {
-                passwdFile << passwdEntry;
-                passwdFile.close();
-                
-                // Синхронизируем запись на диск
-                fsync(fileno(passwdFile));
+            
+            // Открываем файл для добавления
+            FILE* passwdFile = fopen("/etc/passwd", "a");
+            if (passwdFile) {
+                fprintf(passwdFile, "%s", passwdEntry.c_str());
+                fflush(passwdFile);  // Сбрасываем буфер
+                fsync(fileno(passwdFile));  // Синхронизируем на диск
+                fclose(passwdFile);
                 
                 std::ofstream idOut(idFile);
                 if (idOut.is_open()) {
@@ -134,8 +136,8 @@ void VFSManager::checkAndCreateNewUsers() {
                     shellOut.close();
                 }
                 
-                // КРИТИЧЕСКАЯ задержка ТОЛЬКО здесь
-                usleep(5000);  // 5ms - минимальная задержка
+                // Минимальная задержка для синхронизации
+                usleep(5000);  // 5ms
             }
             break;
         }
